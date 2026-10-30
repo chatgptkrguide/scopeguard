@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "check": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "next": "16.4.2",
@@ -21,7 +24,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   },
   "packageManager": "pnpm@10.32.1"
 }
