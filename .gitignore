@@ -55,3 +55,7 @@ _자료/
 *.db-wal
 *.db-shm
 *.sqlite*
+
+# Playwright output
+/test-results/
+/playwright-report/
