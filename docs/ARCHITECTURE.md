@@ -24,7 +24,7 @@ Freelancers agree on a scope with a client, then the client keeps adding request
 
 ## 3. Principles
 
-1. **The agent proposes, the person approves.** No PayPal call happens without a click from the freelancer. Claude never sees PayPal credentials and never moves money.
+1. **The agent proposes, the person approves.** No invoice is created, sent, or cancelled without a click from the freelancer. Claude never sees PayPal credentials and never moves money.
 2. **Prices come from the freelancer's rate, not from the model.** Claude estimates hours; the app computes `hours × hourly rate`. The reasoning shown to the user is the model's, the arithmetic is ours.
 3. **Every money state change is idempotent.** A double click, a retried request, or a duplicate webhook must not create a second invoice or flip a status twice.
 4. **Domain logic is plain TypeScript.** Status rules and money math live in `src/domain` with no framework or I/O, so they are unit tested.
@@ -135,7 +135,7 @@ docs/                       this file
 
 ## 10. Deployment
 
-Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime. Render deploys the `deploy` branch with auto-deploy off; every deploy is started by hand. From the first deploy on, each phase deploys its candidate commit, checks the live app, and either moves `deploy` to the new passing tag or rolls back to the last deployed passing tag; during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
+Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime. Render deploys the `deploy` branch with auto-deploy off; every deploy is started by hand. From the first deploy on, each phase that changes product code deploys its candidate commit, checks the live app, and either moves `deploy` to the new passing tag or rolls back to the last deployed passing tag (the very first deploy has nothing to roll back to, so its fix is redeployed); during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
 
 ## 11. Decisions
 
