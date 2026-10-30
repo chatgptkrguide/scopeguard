@@ -45,3 +45,6 @@ _자료/
 
 # example env is committed
 !.env.example
+
+# local SQLite database
+/data/
