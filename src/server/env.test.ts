@@ -6,7 +6,7 @@ describe("환경변수 검증", () => {
     const env = parseEnv({});
 
     expect(env.PAYPAL_ENV).toBe("sandbox");
-    expect(env.DATABASE_URL).toBe("file:data/scopeguard.db");
+    expect(env.DATABASE_URL).toBe("file:data/tollgate.db");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
@@ -15,7 +15,7 @@ describe("환경변수 검증", () => {
 
     expect(env.PAYPAL_CLIENT_ID).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(env.DATABASE_URL).toBe("file:data/scopeguard.db");
+    expect(env.DATABASE_URL).toBe("file:data/tollgate.db");
   });
 
   it("알 수 없는 PayPal 환경 이름은 거부한다", () => {

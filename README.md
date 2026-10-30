@@ -1,4 +1,4 @@
-# ScopeGuard
+# Tollgate
 
 Catch scope creep in client messages and bill it with PayPal before you do the extra work.
 
@@ -12,7 +12,7 @@ Freelancers who work with overseas clients agree on a scope, then the requests k
 
 1. Paste a new client message into the project.
 2. Claude compares it with the agreed scope and marks the phrases that add work. It estimates the hours; the price comes from your own hourly rate.
-3. You review the mark and send a change order. ScopeGuard creates and sends a PayPal invoice for it.
+3. You review the mark and send a change order. Tollgate creates and sends a PayPal invoice for it.
 4. When the client pays, a PayPal webhook marks the change order as paid and the project total updates.
 
 The agent proposes; nothing is billed until you approve it. The design and the plan the code follows are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -29,7 +29,7 @@ The agent proposes; nothing is billed until you approve it. The design and the p
 ```bash
 pnpm install
 cp .env.example .env.local   # add PayPal sandbox and Anthropic keys
-pnpm db:seed                 # create data/scopeguard.db with the demo project
+pnpm db:seed                 # create data/tollgate.db with the demo project
 pnpm dev
 ```
 

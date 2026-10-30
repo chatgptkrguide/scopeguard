@@ -14,7 +14,7 @@ const publicSans = Public_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "ScopeGuard",
+  title: "Tollgate",
   description:
     "Catch scope creep in client messages and bill it with PayPal before you do the extra work.",
 };

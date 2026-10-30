@@ -39,7 +39,7 @@ export function Workspace({ project }: WorkspaceProps) {
       <header className="border-b border-rule bg-sheet">
         <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-x-10 gap-y-4 px-4 py-5 sm:px-8">
           <div>
-            <p className="text-sm font-semibold tracking-tight">ScopeGuard</p>
+            <p className="text-sm font-semibold tracking-tight">Tollgate</p>
             <h1 className="mt-3 font-serif text-[28px] leading-tight">{project.client}</h1>
             <p className="text-ink-soft">{project.title}</p>
           </div>

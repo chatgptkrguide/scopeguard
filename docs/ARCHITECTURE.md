@@ -1,10 +1,10 @@
-# ScopeGuard architecture
+# Tollgate architecture
 
 This document is the plan the code follows. When the code and this file disagree, fix one of them in the same commit.
 
 ## 1. Product in one paragraph
 
-Freelancers agree on a scope with a client, then the client keeps adding requests in chat and email. ScopeGuard compares each new client message with the agreed scope, marks the phrases that add work, and proposes a change order priced from the freelancer's own hourly rate. The freelancer approves it, ScopeGuard sends a PayPal invoice, and a PayPal webhook marks it paid. Extra work stays locked on a timeline until its change order is paid; the payment webhook unlocks it and moves the delivery date.
+Freelancers agree on a scope with a client, then the client keeps adding requests in chat and email. Tollgate compares each new client message with the agreed scope, marks the phrases that add work, and proposes a change order priced from the freelancer's own hourly rate. The freelancer approves it, Tollgate sends a PayPal invoice, and a PayPal webhook marks it paid. Extra work stays locked on a timeline until its change order is paid; the payment webhook unlocks it and moves the delivery date.
 
 **Who:** solo freelancers and small studios billing clients abroad in USD. **Core loop:** paste message, review marks, send change order, get paid.
 
@@ -121,7 +121,7 @@ docs/                       this file
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | paypal | REST app credentials |
 | `PAYPAL_WEBHOOK_ID` | webhook route | From the app's webhook settings; required to verify signatures |
 | `ANTHROPIC_API_KEY` | ai | Without it, message review is disabled and the UI says so |
-| `DATABASE_URL` | db | Defaults to `file:data/scopeguard.db`; on Render, point it at the disk, e.g. `file:/var/data/scopeguard.db` |
+| `DATABASE_URL` | db | Defaults to `file:data/tollgate.db`; on Render, point it at the disk, e.g. `file:/var/data/tollgate.db` |
 
 ## 9. Testing
 

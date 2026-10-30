@@ -6,7 +6,7 @@ const optional = z.preprocess(emptyToUndefined, z.string().min(1).optional());
 
 const schema = z
   .object({
-    DATABASE_URL: z.preprocess(emptyToUndefined, z.string().default("file:data/scopeguard.db")),
+    DATABASE_URL: z.preprocess(emptyToUndefined, z.string().default("file:data/tollgate.db")),
     PAYPAL_ENV: z.preprocess(emptyToUndefined, z.enum(["sandbox", "live"]).default("sandbox")),
     PAYPAL_CLIENT_ID: optional,
     PAYPAL_CLIENT_SECRET: optional,

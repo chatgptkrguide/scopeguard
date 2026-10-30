@@ -1,4 +1,4 @@
-// pnpm db:migrate  applies migrations to DATABASE_URL (default file:data/scopeguard.db)
+// pnpm db:migrate  applies migrations to DATABASE_URL (default file:data/tollgate.db)
 // pnpm db:seed     also (re)creates the demo project
 import { createDb } from "../src/server/db/client";
 import { runMigrations } from "../src/server/db/migrate";
