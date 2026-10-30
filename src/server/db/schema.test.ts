@@ -1,41 +1,47 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDb, type Db } from "./client";
+import { resetDemoCopy } from "./demo";
 import { runMigrations } from "./migrate";
 import { changeOrders } from "./schema";
-import { seedDemo } from "./seed";
 
 // The database repeats the domain rules, so a write that skips change-order.ts still can't break them.
 describe("DB 제약", () => {
   let db: Db;
+  let draftId: string;
+  let draftOrder: Omit<typeof changeOrders.$inferInsert, "id" | "status">;
 
   beforeEach(async () => {
     db = createDb(":memory:");
     await runMigrations(db);
-    await seedDemo(db);
+    await resetDemoCopy(db, "p-test", new Date("2026-11-01T00:00:00Z"));
+    const [draft] = await db
+      .select()
+      .from(changeOrders)
+      .where(and(eq(changeOrders.projectId, "p-test"), eq(changeOrders.status, "draft")));
+    draftId = draft.id;
+    draftOrder = {
+      projectId: "p-test",
+      findingId: draft.findingId,
+      title: draft.title,
+      hours: draft.hours,
+      amountCents: draft.amountCents,
+      extraDays: draft.extraDays,
+    };
   });
 
-  const draftOrder = {
-    projectId: "demo",
-    findingId: "demo-f2",
-    title: "Loyalty page with customer login",
-    hours: 13,
-    amountCents: 65000,
-    extraDays: 3,
-  };
-
   it("목록에 없는 상태 값은 거부한다", async () => {
-    await expect(db.update(changeOrders).set({ status: "refunded" as "paid" }).where(eq(changeOrders.id, "demo-co2"))).rejects.toThrow();
+    await expect(db.update(changeOrders).set({ status: "refunded" as "paid" }).where(eq(changeOrders.id, draftId))).rejects.toThrow();
   });
 
   it("음수 금액과 0 이하 시간은 거부한다", async () => {
-    await expect(db.update(changeOrders).set({ amountCents: -500 }).where(eq(changeOrders.id, "demo-co2"))).rejects.toThrow();
-    await expect(db.update(changeOrders).set({ hours: 0 }).where(eq(changeOrders.id, "demo-co2"))).rejects.toThrow();
+    await expect(db.update(changeOrders).set({ amountCents: -500 }).where(eq(changeOrders.id, draftId))).rejects.toThrow();
+    await expect(db.update(changeOrders).set({ hours: 0 }).where(eq(changeOrders.id, draftId))).rejects.toThrow();
   });
 
   it("청구서 번호 없이 발송 상태가 될 수 없다", async () => {
     await expect(
-      db.update(changeOrders).set({ status: "sent", sentAt: "2026-11-02T10:00:00Z" }).where(eq(changeOrders.id, "demo-co2")),
+      db.update(changeOrders).set({ status: "sent", sentAt: "2026-11-02T10:00:00Z" }).where(eq(changeOrders.id, draftId)),
     ).rejects.toThrow();
   });
 
@@ -44,18 +50,18 @@ describe("DB 제약", () => {
       db
         .update(changeOrders)
         .set({ status: "paid", paypalInvoiceId: "INV2-TEST", sentAt: "2026-11-02T10:00:00Z" })
-        .where(eq(changeOrders.id, "demo-co2")),
+        .where(eq(changeOrders.id, draftId)),
     ).rejects.toThrow();
   });
 
   it("금액 0으로 발송되거나 발송보다 이른 결제일은 거부한다", async () => {
     const sent = { status: "sent" as const, paypalInvoiceId: "INV2-TEST", sentAt: "2026-11-02T10:00:00Z" };
-    await expect(db.update(changeOrders).set({ ...sent, amountCents: 0 }).where(eq(changeOrders.id, "demo-co2"))).rejects.toThrow();
+    await expect(db.update(changeOrders).set({ ...sent, amountCents: 0 }).where(eq(changeOrders.id, draftId))).rejects.toThrow();
     await expect(
       db
         .update(changeOrders)
         .set({ ...sent, status: "paid", paidAt: "2026-11-01T10:00:00Z" })
-        .where(eq(changeOrders.id, "demo-co2")),
+        .where(eq(changeOrders.id, draftId)),
     ).rejects.toThrow();
   });
 
@@ -65,10 +71,10 @@ describe("DB 제약", () => {
     await db
       .update(changeOrders)
       .set({ status: "cancelled", paypalInvoiceId: "INV2-OLD", sentAt: "2026-11-02T10:00:00Z" })
-      .where(eq(changeOrders.id, "demo-co2"));
+      .where(eq(changeOrders.id, draftId));
     await db.insert(changeOrders).values({ ...draftOrder, id: "requote", status: "draft" });
 
-    const rows = await db.select().from(changeOrders).where(eq(changeOrders.findingId, "demo-f2"));
+    const rows = await db.select().from(changeOrders).where(eq(changeOrders.findingId, draftOrder.findingId));
     expect(rows.map((r) => r.status).sort()).toEqual(["cancelled", "draft"]);
   });
 });

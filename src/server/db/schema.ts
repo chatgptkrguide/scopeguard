@@ -15,6 +15,8 @@ export const projects = sqliteTable(
     agreedOn: text("agreed_on").notNull(),
     dueOn: text("due_on").notNull(),
     createdAt: text("created_at").notNull(),
+    // Last time the visitor opened or reset this copy; copies unused for seven days are deleted.
+    lastSeenAt: text("last_seen_at").notNull(),
   },
   (t) => [
     check("projects_rate_positive", sql`${t.hourlyRateCents} > 0`),
