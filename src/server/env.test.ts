@@ -21,4 +21,14 @@ describe("환경변수 검증", () => {
   it("알 수 없는 PayPal 환경 이름은 거부한다", () => {
     expect(() => parseEnv({ PAYPAL_ENV: "production" })).toThrow();
   });
+
+  it("PAYPAL_ENV가 빈 값이면 샌드박스로 본다", () => {
+    expect(parseEnv({ PAYPAL_ENV: "" }).PAYPAL_ENV).toBe("sandbox");
+  });
+
+  it("실제 결제(live)는 키와 웹훅 ID가 모두 있어야 켜진다", () => {
+    expect(() => parseEnv({ PAYPAL_ENV: "live", PAYPAL_CLIENT_ID: "id", PAYPAL_CLIENT_SECRET: "secret" })).toThrow(/PAYPAL_WEBHOOK_ID/);
+    const env = parseEnv({ PAYPAL_ENV: "live", PAYPAL_CLIENT_ID: "id", PAYPAL_CLIENT_SECRET: "secret", PAYPAL_WEBHOOK_ID: "wh" });
+    expect(env.PAYPAL_ENV).toBe("live");
+  });
 });

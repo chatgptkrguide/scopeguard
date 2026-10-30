@@ -39,7 +39,13 @@ describe("추가 견적 상태 변화", () => {
     expect(canTransition("draft", "paid")).toBe(false);
     expect(canTransition("paid", "paid")).toBe(false);
     expect(canTransition("waived", "sent")).toBe(false);
+    expect(canTransition("cancelled", "sent")).toBe(false);
+    expect(canTransition("paid", "cancelled")).toBe(false);
     expect(() => transition(draft, "paid")).toThrow(TransitionError);
+  });
+
+  it("금액이 0인 추가 견적은 발송할 수 없다", () => {
+    expect(() => transition({ ...draft, amountCents: 0 }, "sent", { paypalInvoiceId: "INV2-AAAA" })).toThrow(/amount/);
   });
 
   it("원래 객체를 바꾸지 않는다", () => {

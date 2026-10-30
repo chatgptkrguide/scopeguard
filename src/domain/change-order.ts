@@ -36,6 +36,7 @@ export function transition(order: ChangeOrder, to: ChangeOrderStatus, details: T
     case "sent": {
       const paypalInvoiceId = details.paypalInvoiceId ?? order.paypalInvoiceId;
       if (!paypalInvoiceId) throw new Error("a sent change order needs a PayPal invoice id");
+      if (!(order.amountCents > 0)) throw new Error("a sent change order needs an amount above zero");
       return { ...order, status: to, paypalInvoiceId, payerViewUrl: details.payerViewUrl ?? order.payerViewUrl, sentAt: at };
     }
     case "paid":
