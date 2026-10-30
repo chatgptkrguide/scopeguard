@@ -88,6 +88,8 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 - The order is still `draft` but holds that invoice id (the app stopped between sending and saving `sent`): record it as sent, then paid.
 - Unknown invoices and repeated events: answer 200 and change nothing.
 
+**Check payment.** If the webhook is late, the freelancer can press "Check payment". It reads the invoice back and applies the same rule (only `PAID` marks the order paid), so a webhook and a click arriving together still change the order once.
+
 **Waive.** `draft → waived` keeps the finding visible with no charge, so the record shows what was given for free.
 
 **Activity panel.** Reviewing and sending write short steps to a log shown beside the workspace: message read, findings proposed with their quotes, price computed from the rate, invoice created and sent, payment confirmed. It explains what the agent did; it never triggers a PayPal call by itself.
@@ -125,13 +127,13 @@ docs/                       this file
 
 ## 9. Testing
 
-- **Unit (Vitest):** status transitions, pricing and rounding, finding validation, database constraints and seed, PayPal client request shapes with `fetch` mocked, webhook handler (verified, unverified, duplicate, unknown invoice, partial payment).
+- **Unit (Vitest):** status transitions, pricing and rounding, finding validation, database constraints and seed, PayPal client request shapes with `fetch` mocked, webhook handler (verified, unverified, no webhook id configured, verification call failing, duplicate, unknown invoice, partial payment, draft recovery), check payment racing the webhook.
 - **Sandbox, by hand:** send a change order, pay it as the sandbox buyer, watch the webhook arrive. Locally the webhook needs a tunnel. Events from PayPal's webhook simulator can't pass signature verification, so the simulator only shows the route is reachable.
 - Every commit passes `pnpm check` (lint, typecheck, test) and `pnpm build`.
 
 ## 10. Deployment
 
-Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime: no deploys during judging (Dec 1–15, 2026). The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
+Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime: auto-deploy is off, deploys happen by hand after tests pass, and during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
 
 ## 11. Decisions
 
