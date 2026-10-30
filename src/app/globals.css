@@ -80,3 +80,8 @@ mark.scope-mark {
   --mark-line: var(--color-ink-soft);
   --mark-wash: transparent;
 }
+
+.scope-mark[data-status="cancelled"] {
+  --mark-line: var(--color-ink-soft);
+  --mark-wash: transparent;
+}
