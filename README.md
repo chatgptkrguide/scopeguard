@@ -20,15 +20,16 @@ The agent proposes; nothing is billed until you approve it. The design and the p
 ## Built with
 
 - Next.js 16, TypeScript, Tailwind CSS 4
-- PayPal REST APIs in the sandbox: Invoicing, Webhooks (Payouts planned for splitting with collaborators)
-- PayPal Agent Toolkit
-- Claude (Anthropic API) for scope comparison
+- PayPal REST APIs in the sandbox: Invoicing and Webhooks
+- Claude (Anthropic API) for scope review
+- SQLite through libSQL and Drizzle
 
 ## Run locally
 
 ```bash
 pnpm install
 cp .env.example .env.local   # add PayPal sandbox and Anthropic keys
+pnpm db:seed                 # create data/scopeguard.db with the demo project
 pnpm dev
 ```
 
