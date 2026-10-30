@@ -13,12 +13,14 @@ Freelancers agree on a scope with a client, then the client keeps adding request
 | Must (MVP) | Should, once the core loop runs on the deployed app | Not doing |
 |:--|:--|:--|
 | One project with agreed scope items and an hourly rate | Timeline where an unpaid change order locks its phase until PayPal confirms payment (Bryntum; trial starts Nov 9 so it covers judging) | Accounts, sign-up, teams |
-| Paste a client message, Claude marks scope additions | Invoice for the agreed scope itself | Multi-currency (USD only) |
+| Paste a client message, Claude marks scope additions | | Multi-currency (USD only) |
 | Change order lifecycle: draft, sent, paid, waived, cancelled | | Email or chat inbox integration |
-| PayPal invoice per change order (create, send, read the payer link) | | Mobile app |
-| Webhook confirms payment, totals update | | Live PayPal (sandbox only) |
+| PayPal invoice per change order (create, send, read the payer link, cancel) | | Mobile app |
+| Webhook confirms payment, with a "Check payment" fallback; totals update | | Live PayPal (sandbox only) |
 | Activity panel: each step Claude and the app took, including what went to PayPal | | Payouts and Orders APIs |
 | Public demo: every visitor gets their own sandbox copy of the demo project | | Agent Toolkit chat assistant |
+| | | Claude drafting the first scope (the agreed scope is typed in or seeded) |
+| | | An invoice for the agreed scope itself |
 
 ## 3. Principles
 
@@ -133,7 +135,7 @@ docs/                       this file
 
 ## 10. Deployment
 
-Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime: auto-deploy is off, deploys happen by hand after tests pass, and during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
+Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations run when the app starts, not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime. Render deploys the `deploy` branch with auto-deploy off; every deploy is started by hand. A phase whose checks need the live app deploys its candidate commit first and rolls back to the last passing tag if the checks fail; during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
 
 ## 11. Decisions
 
