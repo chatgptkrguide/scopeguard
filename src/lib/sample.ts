@@ -53,8 +53,8 @@ export const sampleProject: Project = {
     { id: "s3", title: "Contact form", amount: 300 },
   ],
   changeOrders: [
-    { id: "co1", title: "Gift card page", amount: 250, extraDays: 2, status: "paid", paidOn: "Oct 26" },
-    { id: "co2", title: "Loyalty page with customer login", amount: 650, extraDays: 4, status: "draft" },
+    { id: "co1", title: "Gift card page", amount: 250, extraDays: 1, status: "paid", paidOn: "Oct 26" },
+    { id: "co2", title: "Loyalty page with customer login", amount: 650, extraDays: 3, status: "draft" },
   ],
   messages: [
     {
@@ -62,7 +62,7 @@ export const sampleProject: Project = {
       from: "client",
       author: "Maya Lindqvist",
       sentOn: "Oct 21",
-      body: "Hi Junsu! Excited to get started. As we discussed: a landing page, our menu with online ordering, and a contact form. We'd love to launch by November 15.",
+      body: "Hi! Excited to get started. As we discussed: a landing page, our menu with online ordering, and a contact form. We'd love to launch by November 15.",
     },
     {
       id: "m2",
