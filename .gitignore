@@ -48,3 +48,10 @@ _자료/
 
 # local SQLite database
 /data/
+
+# local SQLite files, wherever DATABASE_URL points
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite*

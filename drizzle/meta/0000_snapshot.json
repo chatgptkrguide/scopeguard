@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "9abb60f2-5d5c-4adf-93f7-9c45a023c6ec",
+  "id": "b41957c4-dd5f-4a5c-bc81-f04c05ccfa2d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "change_orders": {
@@ -93,13 +93,6 @@
         }
       },
       "indexes": {
-        "change_orders_finding_id_unique": {
-          "name": "change_orders_finding_id_unique",
-          "columns": [
-            "finding_id"
-          ],
-          "isUnique": true
-        },
         "change_orders_paypal_invoice_id_unique": {
           "name": "change_orders_paypal_invoice_id_unique",
           "columns": [
@@ -113,6 +106,14 @@
             "project_id"
           ],
           "isUnique": false
+        },
+        "change_orders_live_finding_idx": {
+          "name": "change_orders_live_finding_idx",
+          "columns": [
+            "finding_id"
+          ],
+          "isUnique": true,
+          "where": "\"change_orders\".\"status\" <> 'cancelled'"
         }
       },
       "foreignKeys": {
@@ -145,7 +146,32 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "change_orders_status_known": {
+          "name": "change_orders_status_known",
+          "value": "status IN ('draft', 'sent', 'paid', 'waived', 'cancelled')"
+        },
+        "change_orders_amount_not_negative": {
+          "name": "change_orders_amount_not_negative",
+          "value": "\"change_orders\".\"amount_cents\" >= 0"
+        },
+        "change_orders_hours_positive": {
+          "name": "change_orders_hours_positive",
+          "value": "\"change_orders\".\"hours\" > 0 AND \"change_orders\".\"extra_days\" >= 0"
+        },
+        "change_orders_sent_has_invoice": {
+          "name": "change_orders_sent_has_invoice",
+          "value": "\"change_orders\".\"status\" <> 'sent' OR (\"change_orders\".\"paypal_invoice_id\" IS NOT NULL AND \"change_orders\".\"sent_at\" IS NOT NULL)"
+        },
+        "change_orders_paid_has_dates": {
+          "name": "change_orders_paid_has_dates",
+          "value": "\"change_orders\".\"status\" <> 'paid' OR (\"change_orders\".\"paid_at\" IS NOT NULL AND \"change_orders\".\"sent_at\" IS NOT NULL AND \"change_orders\".\"paid_at\" >= \"change_orders\".\"sent_at\")"
+        },
+        "change_orders_billed_amount_positive": {
+          "name": "change_orders_billed_amount_positive",
+          "value": "\"change_orders\".\"status\" NOT IN ('sent', 'paid') OR \"change_orders\".\"amount_cents\" > 0"
+        }
+      }
     },
     "findings": {
       "name": "findings",
@@ -167,6 +193,20 @@
         "quote": {
           "name": "quote",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "quote_start": {
+          "name": "quote_start",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "quote_end": {
+          "name": "quote_end",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
@@ -219,7 +259,16 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "findings_hours_in_range": {
+          "name": "findings_hours_in_range",
+          "value": "\"findings\".\"estimated_hours\" > 0 AND \"findings\".\"estimated_hours\" <= 200"
+        },
+        "findings_quote_span": {
+          "name": "findings_quote_span",
+          "value": "\"findings\".\"quote_start\" >= 0 AND \"findings\".\"quote_end\" > \"findings\".\"quote_start\""
+        }
+      }
     },
     "messages": {
       "name": "messages",
@@ -367,7 +416,16 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "projects_rate_positive": {
+          "name": "projects_rate_positive",
+          "value": "\"projects\".\"hourly_rate_cents\" > 0"
+        },
+        "projects_hours_per_day_positive": {
+          "name": "projects_hours_per_day_positive",
+          "value": "\"projects\".\"hours_per_day\" > 0"
+        }
+      }
     },
     "scope_items": {
       "name": "scope_items",
@@ -434,7 +492,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "scope_items_amount_not_negative": {
+          "name": "scope_items_amount_not_negative",
+          "value": "\"scope_items\".\"amount_cents\" >= 0"
+        }
+      }
     },
     "webhook_events": {
       "name": "webhook_events",

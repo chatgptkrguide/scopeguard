@@ -53,9 +53,11 @@ All money is stored as integer cents. Dates are ISO strings in UTC.
 | `Project` | id, client name, client email, title, hourly rate, hours per day, agreed on, due date | One per engagement |
 | `ScopeItem` | id, project id, title, amount, position | The agreed scope, version 1 |
 | `Message` | id, project id, from (`client` \| `me`), author, sent at, body | Pasted text, stored as written |
-| `Finding` | id, message id, quote, title, estimated hours, reason | A phrase Claude marked; `quote` must be an exact substring of the body |
-| `ChangeOrder` | id, project id, finding id, title, hours, amount, extra days, status, PayPal invoice id, payer view URL, sent at, paid at | Created from a finding when the user reviews it |
+| `Finding` | id, message id, quote, quote start/end, title, estimated hours, reason | A phrase Claude marked; `quote` must be an exact substring of the body, and its offsets are stored so the screen never searches again |
+| `ChangeOrder` | id, project id, finding id, title, hours, amount, extra days, status, PayPal invoice id, payer view URL, sent at, paid at | Created from a finding when the user reviews it. One live order per finding; after a cancel the finding can be quoted again |
 | `WebhookEvent` | PayPal event id (unique), type, received at, processed at | Makes webhook handling idempotent |
+
+The database repeats the core rules as CHECK constraints (known status, no negative amounts, `sent` needs an invoice id, `paid` needs its dates), so a write that skips the domain code still can't store a broken order.
 
 ### Change order status
 
@@ -72,7 +74,7 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 
 ## 6. Key flows
 
-**Review a message.** The user pastes a client message. A server action stores it, sends the agreed scope plus the message to Claude, and asks for findings in a fixed JSON schema (quote, title, estimated hours, reason). The response is validated with zod; findings whose quote is not found in the message are dropped. Each finding becomes a `draft` change order priced at `hours × rate`, rounded up to the next $10.
+**Review a message.** The user pastes a client message. A server action stores it, sends the agreed scope plus the message to Claude, and asks for findings in a fixed JSON schema (quote, title, estimated hours, reason). The response is validated with zod; findings whose quote is not found in the message are dropped. Curly and straight quote marks match each other, a repeated phrase maps to its next free occurrence, and when two quotes overlap the longer one wins. Each finding becomes a `draft` change order priced at `hours × rate`, rounded up to the next $10.
 
 **Send a change order.** On click: load the order, check the transition `draft → sent` is allowed, create a draft PayPal invoice if the order has no invoice id yet, then send it. The invoice id is saved before sending, so a retry reuses it instead of creating another. The payer view URL is stored so the demo can open the client's view of the invoice.
 

@@ -1,4 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
+import { locateFindings } from "../../domain/finding";
 import { extraDaysForHours, priceForHours } from "../../domain/money";
 import type { Db } from "./client";
 import { changeOrders, findings, messages, projects, scopeItems } from "./schema";
@@ -9,7 +10,42 @@ export const DEMO_PROJECT_ID = "demo";
 const RATE_CENTS = 5000; // $50 an hour
 const HOURS_PER_DAY = 6;
 
-const demoFindings = [
+const demoMessages = [
+  {
+    id: "demo-m1",
+    projectId: DEMO_PROJECT_ID,
+    from: "client",
+    author: "Maya Lindqvist",
+    sentAt: "2026-10-21T08:12:00Z",
+    body: "Hi! Excited to get started. As we discussed: a landing page, our menu with online ordering, and a contact form. We'd love to launch by November 15.",
+  },
+  {
+    id: "demo-m2",
+    projectId: DEMO_PROJECT_ID,
+    from: "me",
+    author: "You",
+    sentAt: "2026-10-21T09:30:00Z",
+    body: "Thanks Maya. Sending the quote for those three pages now, with launch on November 15.",
+  },
+  {
+    id: "demo-m3",
+    projectId: DEMO_PROJECT_ID,
+    from: "client",
+    author: "Maya Lindqvist",
+    sentAt: "2026-10-24T15:05:00Z",
+    body: "Quick one: could we sell gift cards on the site too? Holiday season is coming.",
+  },
+  {
+    id: "demo-m4",
+    projectId: DEMO_PROJECT_ID,
+    from: "client",
+    author: "Maya Lindqvist",
+    sentAt: "2026-10-28T11:40:00Z",
+    body: "The menu looks great so far! Could you also add a loyalty page where customers log in to see their stamps? Our investors want it at launch.",
+  },
+] as const;
+
+const demoFindingDrafts = [
   {
     id: "demo-f1",
     messageId: "demo-m3",
@@ -29,12 +65,22 @@ const demoFindings = [
   },
 ];
 
+// Offsets come from the same check the app runs on model output, so a typo in the demo text fails loudly.
+function demoFindings() {
+  return demoFindingDrafts.map(({ id, messageId, ...draft }) => {
+    const body = demoMessages.find((m) => m.id === messageId)?.body ?? "";
+    const [located] = locateFindings(body, [draft]);
+    if (!located) throw new Error(`demo finding ${id} does not quote ${messageId}`);
+    return { id, messageId, ...draft, quoteStart: located.start, quoteEnd: located.end };
+  });
+}
+
 export async function seedDemo(db: Db): Promise<void> {
   await db.transaction(async (tx) => {
-    // Delete children explicitly: SQLite only cascades when foreign_keys is on for the connection.
-    const demoMessages = tx.select({ id: messages.id }).from(messages).where(eq(messages.projectId, DEMO_PROJECT_ID));
+    // Delete children explicitly so a reset never depends on the connection's foreign_keys setting.
+    const demoMessageIds = tx.select({ id: messages.id }).from(messages).where(eq(messages.projectId, DEMO_PROJECT_ID));
     await tx.delete(changeOrders).where(eq(changeOrders.projectId, DEMO_PROJECT_ID));
-    await tx.delete(findings).where(inArray(findings.messageId, demoMessages));
+    await tx.delete(findings).where(inArray(findings.messageId, demoMessageIds));
     await tx.delete(messages).where(eq(messages.projectId, DEMO_PROJECT_ID));
     await tx.delete(scopeItems).where(eq(scopeItems.projectId, DEMO_PROJECT_ID));
     await tx.delete(projects).where(eq(projects.id, DEMO_PROJECT_ID));
@@ -57,44 +103,11 @@ export async function seedDemo(db: Db): Promise<void> {
       { id: "demo-s3", projectId: DEMO_PROJECT_ID, title: "Contact form", amountCents: 30000, position: 3 },
     ]);
 
-    await tx.insert(messages).values([
-      {
-        id: "demo-m1",
-        projectId: DEMO_PROJECT_ID,
-        from: "client",
-        author: "Maya Lindqvist",
-        sentAt: "2026-10-21T08:12:00Z",
-        body: "Hi! Excited to get started. As we discussed: a landing page, our menu with online ordering, and a contact form. We'd love to launch by November 15.",
-      },
-      {
-        id: "demo-m2",
-        projectId: DEMO_PROJECT_ID,
-        from: "me",
-        author: "You",
-        sentAt: "2026-10-21T09:30:00Z",
-        body: "Thanks Maya. Sending the quote for those three pages now, with launch on November 15.",
-      },
-      {
-        id: "demo-m3",
-        projectId: DEMO_PROJECT_ID,
-        from: "client",
-        author: "Maya Lindqvist",
-        sentAt: "2026-10-24T15:05:00Z",
-        body: "Quick one: could we sell gift cards on the site too? Holiday season is coming.",
-      },
-      {
-        id: "demo-m4",
-        projectId: DEMO_PROJECT_ID,
-        from: "client",
-        author: "Maya Lindqvist",
-        sentAt: "2026-10-28T11:40:00Z",
-        body: "The menu looks great so far! Could you also add a loyalty page where customers log in to see their stamps? Our investors want it at launch.",
-      },
-    ]);
+    await tx.insert(messages).values([...demoMessages]);
 
-    await tx.insert(findings).values(demoFindings);
+    await tx.insert(findings).values(demoFindings());
 
-    const order = (finding: (typeof demoFindings)[number], id: string) => ({
+    const order = (finding: (typeof demoFindingDrafts)[number], id: string) => ({
       id,
       projectId: DEMO_PROJECT_ID,
       findingId: finding.id,
@@ -105,9 +118,9 @@ export async function seedDemo(db: Db): Promise<void> {
     });
 
     await tx.insert(changeOrders).values([
-      // Sample history: shown as paid, never sent through PayPal.
-      { ...order(demoFindings[0], "demo-co1"), status: "paid", sentAt: "2026-10-24T16:00:00Z", paidAt: "2026-10-26T10:00:00Z" },
-      { ...order(demoFindings[1], "demo-co2"), status: "draft" },
+      // Sample history: paid before this demo started, so it has no PayPal invoice of its own.
+      { ...order(demoFindingDrafts[0], "demo-co1"), status: "paid", sentAt: "2026-10-24T16:00:00Z", paidAt: "2026-10-26T10:00:00Z" },
+      { ...order(demoFindingDrafts[1], "demo-co2"), status: "draft" },
     ]);
   });
 }

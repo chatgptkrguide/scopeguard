@@ -35,6 +35,8 @@ export interface Finding {
   id: string;
   messageId: string;
   quote: string;
+  quoteStart: number;
+  quoteEnd: number;
   title: string;
   estimatedHours: number;
   reason: string;
