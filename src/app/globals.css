@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* Direction A "Redline": a contract under review. Only the mark (violet) and paid (green) carry color. */
+@theme {
+  --color-paper: #eef0f3;
+  --color-sheet: #ffffff;
+  --color-ink: #1b2230;
+  --color-ink-soft: #5b6474;
+  --color-rule: #d5dae1;
+  --color-mark: #6a3fd1;
+  --color-mark-wash: #efeafc;
+  --color-paid: #11795a;
+  --color-paid-wash: #e2f2eb;
+}
+
+@theme inline {
+  --font-serif: var(--font-literata), Georgia, serif;
+  --font-sans: var(--font-public-sans), system-ui, sans-serif;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-mark);
+  outline-offset: 2px;
+}
+
+/* A scope addition in a client message: wash + 2px underline drawn left to right */
+.scope-mark {
+  background-image:
+    linear-gradient(var(--mark-line, var(--color-mark)), var(--mark-line, var(--color-mark))),
+    linear-gradient(var(--mark-wash, var(--color-mark-wash)), var(--mark-wash, var(--color-mark-wash)));
+  background-repeat: no-repeat;
+  background-position: 0 100%, 0 0;
+  background-size: 100% 2px, 100% 100%;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 1px;
+}
+
+.scope-mark[data-animate="true"] {
+  animation: mark-draw 520ms cubic-bezier(0.3, 0, 0.2, 1) both;
+}
+
+.margin-note[data-animate="true"] {
+  animation: note-in 260ms cubic-bezier(0.2, 0, 0, 1) 420ms both;
+}
+
+@keyframes mark-draw {
+  from { background-size: 0% 2px, 0% 100%; }
+}
+
+@keyframes note-in {
+  from { opacity: 0; transform: translateX(12px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-mark[data-animate="true"],
+  .margin-note[data-animate="true"] {
+    animation: none;
+  }
+}
+
+/* <mark> keeps its meaning, not the browser's yellow */
+mark.scope-mark {
+  color: inherit;
+  background-color: transparent;
+}
+
+.scope-mark[data-status="paid"] {
+  --mark-line: var(--color-paid);
+  --mark-wash: var(--color-paid-wash);
+}
+
+.scope-mark[data-status="waived"] {
+  --mark-line: var(--color-ink-soft);
+  --mark-wash: transparent;
+}
