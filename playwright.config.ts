@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 const PORT = 3210;
 
-// Browser tests run against a production build on a throwaway database, using the installed Chrome.
+// Browser tests run against a production build on a fresh throwaway database, using the installed Chrome.
 export default defineConfig({
   testDir: "e2e",
   fullyParallel: false,
@@ -13,7 +13,7 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: `pnpm db:migrate && pnpm build && pnpm start --port ${PORT}`,
+    command: `rm -f data/e2e.db && pnpm db:migrate && pnpm build && pnpm start --port ${PORT}`,
     url: `http://localhost:${PORT}`,
     env: { DATABASE_URL: "file:data/e2e.db" },
     reuseExistingServer: false,
