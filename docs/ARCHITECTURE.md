@@ -51,7 +51,7 @@ Freelancers agree on a scope with a client, then the client keeps adding request
 
 ## 5. Domain model
 
-All money is stored as integer cents. Dates are ISO strings in UTC.
+All money is stored as integer cents. Dates are ISO strings in UTC. Every project is a visitor's demo copy: `projects.created_at` is when the copy was created or last reset, and `last_seen_at` is when it was last opened.
 
 | Entity | Key fields | Notes |
 |:--|:--|:--|
@@ -83,7 +83,7 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 
 **Send a change order.** The server action receives only the change order id and loads the amount and status from the database. It checks that `draft → sent` is allowed, then creates a draft PayPal invoice if the order has no invoice id yet, with `PayPal-Request-Id` set to the change order id so a doubled or retried request gets the same invoice back. The invoice id is saved before sending, so a retry reuses it. After sending, it reads the invoice back and stores `detail.metadata.recipient_view_url` as the payer view URL, so the demo can open the client's view.
 
-**Get paid.** PayPal posts `INVOICING.INVOICE.PAID` to `/api/webhooks/paypal`. The handler reads the raw body as text (refusing bodies over 64 KB) and verifies it with `POST /v1/notifications/verify-webhook-signature`; the event is passed back exactly as received, because re-serializing it can fail verification. PayPal also sends this event for partial and pending payments, so the handler reads the invoice back and moves the order to `paid` only when the invoice status is `PAID`. Recording the event id and changing the order happen in one transaction; a conflict on the event id means a duplicate.
+**Get paid.** PayPal posts `INVOICING.INVOICE.PAID` to `/api/webhooks/paypal`. The handler reads the raw body as text (refusing bodies over 64 KB) and verifies it with `POST /v1/notifications/verify-webhook-signature`; the event is passed back exactly as received, because re-serializing it can fail verification. PayPal also sends this event for partial and pending payments, so the handler reads the invoice back and moves the order to `paid` only when the invoice status is `PAID`. Recording the event id and changing the order happen in one `db.batch()` (a single SQLite transaction); a conflict on the event id means a duplicate.
 
 - No `PAYPAL_WEBHOOK_ID` configured: every webhook is rejected.
 - PayPal's verification call fails: answer 5xx so PayPal retries.
@@ -94,24 +94,27 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 
 **Waive.** `draft → waived` keeps the finding visible with no charge, so the record shows what was given for free.
 
+**Reading the workspace.** `getWorkspace(db, projectId)` in `src/server/db/queries.ts` returns the project, its scope items, its messages with their findings (each with the stored quote offsets and the live change order), every change order, and the totals: agreed, with changes (agreed plus draft, sent and paid orders), and paid. Waived and cancelled orders are listed but never counted. The screen marks quotes only at the stored offsets and never searches the text again.
+
 **Activity panel.** Reviewing and sending write short steps to a log shown beside the workspace: message read, findings proposed with their quotes, price computed from the rate, invoice created and sent, payment confirmed. It explains what the agent did; it never triggers a PayPal call by itself.
 
-**Public demo.** A visitor without a demo cookie gets a fresh copy of the demo project under a new id, tied to a random cookie, and can reset it. Claude calls are capped per copy and per day overall. Copies older than seven days are deleted.
+**Public demo.** `src/proxy.ts` gives a visitor without a valid `tg_visitor` cookie a random 256-bit id (HttpOnly, SameSite=Lax, Secure in production, seven days) and forwards it to the same request, so the first page render already sees it. The visitor's project id is a hash of that id (`v_` + 22 characters of SHA-256), so the cookie can't be recovered from the database and the same visitor always maps to the same copy. The page creates the copy the first time it renders for that id; two requests racing to create it end with one copy, because the project id is the primary key. Creating the copy and refreshing its `last_seen_at` (at most once an hour) are the only writes allowed during rendering. Every copy and every reset gets fresh random ids for its child rows, so a change order id (later the PayPal request id) is never reused. Reset replaces all rows of the copy in one batch. Copies not opened for seven days (`last_seen_at`) are deleted whenever a new copy is created, so a judge who returns days later still finds their copy. Server actions receive only ids, derive the project from the cookie, and answer `not_found` for anything outside the visitor's copy. Claude calls are capped per copy and per day overall.
 
 ## 7. Directory layout
 
 ```
 src/
+  proxy.ts                  visitor cookie
   app/                      routes, layouts, server actions
     api/webhooks/paypal/    PayPal webhook route handler
   components/               UI (client components only where state is needed)
   domain/                   types, status rules, money math (no I/O)
   server/
     env.ts                  zod-validated environment
-    db/                     Drizzle schema, client, queries, seed
+    visitor.ts, session.ts  visitor cookie helpers, current visitor and project
+    db/                     Drizzle schema, client, demo copies, queries, change order commands
     paypal/                 REST client: token, invoices, webhook verification
     ai/                     scope review prompt + Claude client
-  lib/                      sample data for the static screen (goes away once the screen reads the database)
 drizzle/                    SQL migrations generated by drizzle-kit
 scripts/                    db.mts: migrate and seed from the command line
 docs/                       this file
@@ -129,8 +132,10 @@ docs/                       this file
 
 ## 9. Testing
 
-- **Unit (Vitest):** status transitions, pricing and rounding, finding validation, database constraints and seed, PayPal client request shapes with `fetch` mocked, webhook handler (verified, unverified, no webhook id configured, verification call failing, duplicate, unknown invoice, partial payment, draft recovery), check payment racing the webhook.
+- **Database writes:** statements that must land together use `db.batch()`. Interactive `db.transaction()` callbacks that await between statements are not used in request handling: libSQL's local client runs on the Node thread, so any other write during an open write transaction fails at once with `SQLITE_BUSY`, and a busy timeout only blocks the thread.
+- **Unit (Vitest):** status transitions, pricing and rounding, finding validation, database constraints, demo copies (independence, concurrent creation, reset, seven-day cleanup by last use), the visitor cookie in `proxy.ts`, workspace queries and totals, the waive and reset actions refusing another copy's ids, PayPal client request shapes with `fetch` mocked, webhook handler (verified, unverified, no webhook id configured, verification call failing, duplicate, unknown invoice, partial payment, draft recovery), check payment racing the webhook.
 - **Sandbox, by hand:** send a change order, pay it as the sandbox buyer, watch the webhook arrive. Locally the webhook needs a tunnel. Events from PayPal's webhook simulator can't pass signature verification, so the simulator only shows the route is reachable.
+- **Browser (Playwright, `pnpm e2e`):** a production build on a fresh `data/e2e.db` with the installed Chrome; two browser contexts get separate copies, state survives reload, reset restores the seed, and a forged id from another copy is refused.
 - Every commit passes `pnpm check` (lint, typecheck, test) and `pnpm build`.
 
 ## 10. Deployment
