@@ -92,9 +92,9 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 
 **Check payment.** If the webhook is late, the freelancer can press "Check payment". It reads the invoice back and applies the same rule (only `PAID` marks the order paid), so a webhook and a click arriving together still change the order once.
 
-**Waive.** `draft → waived` keeps the finding visible with no charge, so the record shows what was given for free.
+**Waive.** `draft → waived` keeps the finding visible with no charge, so the record shows what was given for free. Waiving can't be undone, so the button asks for a second confirmation first.
 
-**Reading the workspace.** `getWorkspace(db, projectId)` in `src/server/db/queries.ts` returns the project, its scope items, its messages with their findings (each with the stored quote offsets and the live change order), every change order, and the totals: agreed, with changes (agreed plus draft, sent and paid orders), and paid. Waived and cancelled orders are listed but never counted. The screen marks quotes only at the stored offsets and never searches the text again.
+**Reading the workspace.** `getWorkspace(db, projectId)` in `src/server/db/queries.ts` returns the project, its scope items, its messages with their findings (each with the stored quote offsets and the live change order), every change order, and the totals: agreed, with changes (agreed plus draft, sent and paid orders), and paid. Waived and cancelled orders are listed but never counted. The page goes through `openVisitorWorkspace`, which ensures the copy and reads it, trying once more if a cleanup removed the copy in between. The screen marks quotes only at the stored offsets and never searches the text again.
 
 **Activity panel.** Reviewing and sending write short steps to a log shown beside the workspace: message read, findings proposed with their quotes, price computed from the rate, invoice created and sent, payment confirmed. It explains what the agent did; it never triggers a PayPal call by itself.
 
