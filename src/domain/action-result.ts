@@ -14,6 +14,8 @@ export type ActionResult = { ok: true } | { ok: false; error: ActionError };
 // confirmed or saved here; pressing again checks and settles it
 // invoice_void: PayPal can't use this order's invoice any more (cancelled there), so the order is now cancelled
 // and can be quoted again · rate_limited: the server-wide send cap is reached, so PayPal wasn't called
+// not_paid_yet: PayPal doesn't show the invoice as paid in full · invoice_changed: PayPal's invoice has a different
+// reference or amount than the order, so it wasn't marked paid
 export const PAYPAL_ACTION_ERRORS = [
   "in_progress",
   "paypal_unavailable",
@@ -24,6 +26,8 @@ export const PAYPAL_ACTION_ERRORS = [
   "paypal_unconfirmed",
   "invoice_void",
   "rate_limited",
+  "not_paid_yet",
+  "invoice_changed",
 ] as const;
 export type PayPalActionError = (typeof PAYPAL_ACTION_ERRORS)[number];
 export type BillingActionResult = { ok: true } | { ok: false; error: ActionError | PayPalActionError };

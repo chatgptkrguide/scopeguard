@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { ActionResult, BillingActionResult } from "@/domain/action-result";
 import { cancelOwnedChangeOrder, liveBillingDeps, requoteOwnedChangeOrder, sendOwnedChangeOrder } from "@/server/billing";
 import { waiveOwnedChangeOrder } from "@/server/db/change-orders";
+import { checkOwnedPayment } from "@/server/payments";
 import { getDb } from "@/server/db/client";
 import { resetDemoCopy } from "@/server/db/demo";
 import { currentProjectId } from "@/server/session";
@@ -108,6 +109,25 @@ export async function requoteChangeOrder(_prev: ActionResult | null, formData: F
     result = await requoteOwnedChangeOrder(getDb(), ownerProjectId, changeOrderId.data);
   } catch (error) {
     console.error("quoting a change order again failed", error);
+    return { ok: false, error: "server_error" };
+  }
+  if (result.ok) refresh();
+  return result;
+}
+
+// Reads the invoice from PayPal and marks the order paid if PayPal says so. Refreshes the page when it is paid.
+export async function checkPayment(_prev: BillingActionResult | null, formData: FormData): Promise<BillingActionResult> {
+  const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
+  if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
+
+  const ownerProjectId = await currentProjectId();
+  if (!ownerProjectId) return { ok: false, error: "not_found" };
+
+  let result: BillingActionResult;
+  try {
+    result = await checkOwnedPayment(liveBillingDeps(), ownerProjectId, changeOrderId.data);
+  } catch (error) {
+    console.error("checking a payment failed", error);
     return { ok: false, error: "server_error" };
   }
   if (result.ok) refresh();

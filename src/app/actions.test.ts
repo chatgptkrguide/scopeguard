@@ -9,7 +9,7 @@ import { runMigrations } from "@/server/db/migrate";
 import { changeOrders, projects } from "@/server/db/schema";
 import { PayPalError } from "@/server/paypal/errors";
 import { newVisitorId, VISITOR_COOKIE } from "@/server/visitor";
-import { cancelChangeOrder, requoteChangeOrder, resetDemo, sendChangeOrder, waiveChangeOrder } from "./actions";
+import { cancelChangeOrder, checkPayment, requoteChangeOrder, resetDemo, sendChangeOrder, waiveChangeOrder } from "./actions";
 
 // Only the framework edges are replaced: the request's cookies, the router refresh, which database to use,
 // and which PayPal to talk to (a stand-in; the real one is never called from unit tests).
@@ -489,5 +489,48 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
     const result = await requoteChangeOrder(null, form({ changeOrderId: draft.id }));
 
     expect(result).toEqual({ ok: false, error: "server_error" });
+  });
+
+  it("결제 확인 액션은 견적 id 형식이 아니면 invalid_input이다", async () => {
+    signIn(me);
+    const reads: string[] = [];
+    request.paypal = { ...healthyPayPal(), get: async (id) => (reads.push(id), Promise.reject(new Error("not expected"))) };
+
+    const results = [await checkPayment(null, form({ changeOrderId: "not-a-uuid" })), await checkPayment(null, form({}))];
+
+    expect(results).toEqual(Array(2).fill({ ok: false, error: "invalid_input" }));
+    expect(reads).toEqual([]);
+  });
+
+  it("결제 확인 액션은 성공했을 때만 화면을 새로 고친다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+    vi.mocked(refresh).mockClear();
+    const view = (status: string) => ({ id: "INV2-DZQM-QREH-7LAT-F7YR", status, invoiceNumber: null, reference: draft.id, amountValue: "650.00", payerViewUrl: null });
+
+    request.paypal = { ...healthyPayPal(), get: async () => view("SENT") };
+    const notYet = await checkPayment(null, form({ changeOrderId: draft.id }));
+    const refreshesBeforePaid = vi.mocked(refresh).mock.calls.length;
+    request.paypal = { ...healthyPayPal(), get: async () => view("PAID") };
+    const paid = await checkPayment(null, form({ changeOrderId: draft.id, amountCents: "1", status: "paid" }));
+
+    expect(notYet).toEqual({ ok: false, error: "not_paid_yet" });
+    expect(refreshesBeforePaid).toBe(0);
+    expect(paid).toEqual({ ok: true });
+    expect(await statusOf(draft.id)).toBe("paid");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("다른 사본의 견적으로 결제 확인을 누르면 not_found이고 PayPal을 부르지 않는다", async () => {
+    signIn(me);
+    const theirDraft = await draftOf(theirs);
+    const reads: string[] = [];
+    request.paypal = { ...healthyPayPal(), get: async (id) => (reads.push(id), Promise.reject(new Error("not expected"))) };
+
+    const result = await checkPayment(null, form({ changeOrderId: theirDraft.id }));
+
+    expect(result).toEqual({ ok: false, error: "not_found" });
+    expect(reads).toEqual([]);
   });
 });

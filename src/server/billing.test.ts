@@ -22,6 +22,9 @@ import { PayPalError } from "./paypal/errors";
 import {
   INVOICE_ID,
   PAYER_VIEW_URL,
+  WEBHOOK_ID,
+  paidEvent,
+  signatureHeaders,
   cancelledInvoice,
   createdDraft,
   duplicateInvoiceNumber,
@@ -35,6 +38,7 @@ import {
 } from "../../test/paypal-fixtures";
 import type { InvoiceInput, InvoiceView } from "./paypal/invoices";
 import { createPayPalClient, paypalConfig } from "./paypal/token";
+import { receivePayPalWebhook } from "./webhook";
 
 const T0 = new Date("2026-11-01T09:00:00.000Z");
 
@@ -686,6 +690,69 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(results).toEqual(Array(2).fill({ ok: false, error: "paypal_rejected" }));
       expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+    });
+  });
+
+  describe("이미 결제된 청구서를 가진 draft (P2-D7)", () => {
+    const refuseSend = async () => Promise.reject(new PayPalError("rejected", 422, "CANNOT_SEND_INVOICE", null));
+    async function draftHoldingInvoice() {
+      const draft = await orderOf(mine, "draft");
+      await db.update(changeOrders).set({ paypalInvoiceId: INVOICE_ID }).where(eq(changeOrders.id, draft.id));
+      return draft;
+    }
+
+    it("청구서 id를 가진 draft를 다시 보낼 때 PayPal이 이미 PAID라 발송이 거절되면 paid로 정리된다", async () => {
+      const draft = await draftHoldingInvoice();
+      const paypal = fakeGateway({ send: refuseSend, get: async (id) => ({ ...sentView(id, draft.id), status: "PAID" }) });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: true });
+      expect(await row(draft.id)).toMatchObject({ status: "paid", sendClaimedAt: null, payerViewUrl: PAYER_VIEW_URL });
+      expect(paypal.calls.create).toHaveLength(0);
+      expect(await kinds(mine)).toEqual(["invoice_sent", "payment_confirmed"]);
+      expect((await listActivity(db, mine)).at(-1)?.detail).toMatchObject({ source: "send", paypalStatus: "PAID" });
+    });
+
+    it("(PM 결정 D1) 같은 경우 MARKED_AS_PAID여도 paid로 정리된다", async () => {
+      const draft = await draftHoldingInvoice();
+      const paypal = fakeGateway({ send: refuseSend, get: async (id) => ({ ...sentView(id, draft.id), status: "MARKED_AS_PAID" }) });
+
+      expect(await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id)).toEqual({ ok: true });
+      expect((await row(draft.id)).status).toBe("paid");
+    });
+
+    it("발송이 거절됐고 PayPal이 PAID인데 금액이 다르면 정리하지 않고 paypal_rejected이며 draft 그대로다", async () => {
+      const draft = await draftHoldingInvoice();
+      const paypal = fakeGateway({ send: refuseSend, get: async (id) => ({ ...sentView(id, draft.id), status: "PAID", amountValue: "600.00" }) });
+
+      expect(await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id)).toEqual({ ok: false, error: "paypal_rejected" });
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+    });
+
+    it("발송 중에 웹훅이 draft를 paid로 바꾸면 발송 요청은 성공으로 끝나고 상태는 paid다", async () => {
+      const draft = await draftHoldingInvoice();
+      const paidView = async (id: string) => ({ ...sentView(id, draft.id), status: "PAID" });
+      const webhookPayPal = fakeGateway({ get: paidView });
+      const verifier = { verify: async () => "verified" as const };
+      const event = new Request("https://tollgate.example/api/webhooks/paypal", { method: "POST", body: JSON.stringify(paidEvent(INVOICE_ID, draft.id)), headers: signatureHeaders });
+      let webhookReply: unknown;
+      const paypal = fakeGateway({
+        send: async () => {
+          // The client pays and the webhook lands while PayPal is still answering this send.
+          vi.spyOn(console, "log").mockImplementation(() => {});
+          webhookReply = await receivePayPalWebhook({ db, paypal: webhookPayPal.gateway, verifier, webhookId: WEBHOOK_ID, now: clock.now }, event);
+          return "sent";
+        },
+        get: paidView,
+      });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(webhookReply).toEqual({ status: 200, outcome: "settled" });
+      expect(result).toEqual({ ok: true });
+      expect(await row(draft.id)).toMatchObject({ status: "paid", sendClaimedAt: null });
+      expect(await kinds(mine)).toEqual(["invoice_sent", "payment_confirmed"]);
     });
   });
 

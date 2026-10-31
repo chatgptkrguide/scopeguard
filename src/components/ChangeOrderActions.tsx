@@ -2,7 +2,7 @@
 
 import { useActionState, useEffect, useId, useRef, useState, type MouseEvent, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { cancelChangeOrder, requoteChangeOrder, sendChangeOrder, waiveChangeOrder } from "@/app/actions";
+import { cancelChangeOrder, checkPayment, requoteChangeOrder, sendChangeOrder, waiveChangeOrder } from "@/app/actions";
 import type { ActionError, ActionResult, BillingActionResult, PayPalActionError } from "@/domain/action-result";
 import type { ChangeOrder } from "@/domain/types";
 
@@ -30,6 +30,8 @@ const errorText: Record<ActionError | PayPalActionError, string> = {
   paypal_unconfirmed: "PayPal may have sent it, but this page couldn't confirm it. Press Send again to check; the client won't get a second invoice.",
   invoice_void: "PayPal can't use this invoice any more, so it's marked cancelled here. Quote it again to send a new one.",
   rate_limited: "This demo has sent as many PayPal invoices as it may for now, so nothing was sent. Try again later.",
+  not_paid_yet: "PayPal doesn't show this invoice as fully paid yet. Check again after the client pays.",
+  invoice_changed: "PayPal shows a different amount for this invoice, so it wasn't marked paid. Check it in PayPal.",
 };
 
 const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {
@@ -37,6 +39,12 @@ const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> 
   paypal_rejected: "PayPal refused to cancel it, so the invoice is still open.",
   paypal_unconfirmed: "PayPal cancelled the invoice, but this page couldn't save that. Cancel it again to bring the page up to date.",
   not_configured: "PayPal isn't set up on this server, so the invoice wasn't cancelled.",
+};
+
+const checkErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {
+  paypal_unavailable: "PayPal didn't respond, so the payment couldn't be checked. Try again.",
+  paypal_rejected: "PayPal refused to show this invoice, so the payment couldn't be checked.",
+  not_configured: "PayPal isn't set up on this server, so the payment couldn't be checked.",
 };
 
 // Pressing shows a color change; a disabled (aria-disabled) button shows none and takes palette colors.
@@ -54,8 +62,8 @@ function useFocusOnSuccess(state: ActionResult | BillingActionResult | null, sta
 }
 
 // The buttons under a change order: send or include at no charge (draft), send again (a draft PayPal already has an
-// invoice for), the client's PayPal page and cancel (sent), quote again (cancelled). The browser sends only the
-// order id; the server decides the rest.
+// invoice for), the client's PayPal page, check payment and cancel (sent), quote again (cancelled). The browser sends
+// only the order id; the server decides the rest.
 export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: ChangeOrderActionsProps) {
   // Every hook stays here, whatever the status, so the component stays mounted through the refresh after an
   // action and can move focus once the new status arrives.
@@ -63,6 +71,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
   const [sendState, sendAction, sending] = useActionState(sendChangeOrder, null);
   const [cancelState, cancelAction, cancelling] = useActionState(cancelChangeOrder, null);
   const [requoteState, requoteAction, requoting] = useActionState(requoteChangeOrder, null);
+  const [checkState, checkAction, checking] = useActionState(checkPayment, null);
   // Which confirmation is open, for which order: quoting again gives this note a new order.
   const [confirming, setConfirming] = useState<{ step: "waive" | "cancel"; orderId: string } | null>(null);
   const sendRef = useRef<HTMLButtonElement>(null);
@@ -79,6 +88,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
   useFocusOnSuccess(sendState, statusLineId);
   useFocusOnSuccess(cancelState, statusLineId);
   useFocusOnSuccess(requoteState, statusLineId);
+  useFocusOnSuccess(checkState, statusLineId);
   // Sending found the invoice cancelled in PayPal: the note turned cancelled, so focus goes to its status line too.
   useEffect(() => {
     if (sendState?.ok === false && sendState.error === "invoice_void") document.getElementById(statusLineId)?.focus();
@@ -213,6 +223,19 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
             <span className="sr-only"> (opens in a new tab)</span>
           </a>
         )}
+        {/* When the webhook is late: reads the invoice from PayPal and marks it paid if PayPal says so. */}
+        <form action={checkAction} data-action="check-payment" className="mt-2">
+          <input type="hidden" name="changeOrderId" value={order.id} />
+          <button
+            type="submit"
+            aria-disabled={blocked || checking || undefined}
+            aria-describedby={blocked ? reasonId : undefined}
+            onClick={submitOnce(blocked || checking)}
+            className={`${SECONDARY} ${blocked ? "aria-disabled:cursor-not-allowed" : "aria-disabled:cursor-wait"}`}
+          >
+            {checking ? "Checking…" : "Check payment"}
+          </button>
+        </form>
         <form action={cancelAction} data-action="cancel" className="mt-2 flex flex-wrap gap-2">
           <input type="hidden" name="changeOrderId" value={order.id} />
           {confirmingCancel ? (
@@ -259,6 +282,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
           </p>
         )}
         {reason}
+        {errorFor(checkState, checkErrorText)}
         {errorFor(cancelState, cancelErrorText)}
       </div>
     );
