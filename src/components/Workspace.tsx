@@ -41,6 +41,7 @@ const notCounted = (status: ChangeOrderStatus) => status === "waived" || status 
 
 const noteId = (order: ChangeOrder) => `note-${order.id}`;
 const statusLineId = (order: ChangeOrder) => `status-${order.id}`;
+const titleId = (order: ChangeOrder) => `title-${order.id}`;
 
 function statusLine(order: ChangeOrder): string {
   return order.status === "paid" && order.paidAt ? `${statusText.paid} ${formatShortDate(order.paidAt)}` : statusText[order.status];
@@ -124,7 +125,13 @@ function MessageRow({ message, sendBlockedReason }: MessageRowProps) {
       {quoted.length > 0 && (
         <div className="space-y-6">
           {quoted.map(({ finding, order }) => (
-            <MarginNote key={order.id} reason={finding.reason} order={order} sendBlockedReason={sendBlockedReason} />
+            <MarginNote
+              key={order.id}
+              quote={finding.quote}
+              reason={finding.reason}
+              order={order}
+              sendBlockedReason={sendBlockedReason}
+            />
           ))}
         </div>
       )}
@@ -162,20 +169,28 @@ interface SegmentProps {
 
 function Segment({ segment, order }: SegmentProps) {
   if (segment.kind === "text" || !order) return <>{segment.text}</>;
+  // Described by the note's status and title only: the whole note would include its button names.
+  // Few screen readers read a description on text that takes no focus, so the note also quotes the mark.
   return (
-    <mark className="scope-mark" data-status={order.status} data-animate={order.status === "draft"} aria-describedby={noteId(order)}>
+    <mark
+      className="scope-mark"
+      data-status={order.status}
+      data-animate={order.status === "draft"}
+      aria-describedby={`${statusLineId(order)} ${titleId(order)}`}
+    >
       {segment.text}
     </mark>
   );
 }
 
 interface MarginNoteProps {
+  quote: string;
   reason: string;
   order: ChangeOrder;
   sendBlockedReason: string | null;
 }
 
-function MarginNote({ reason, order, sendBlockedReason }: MarginNoteProps) {
+function MarginNote({ quote, reason, order, sendBlockedReason }: MarginNoteProps) {
   const open = order.status === "draft";
 
   return (
@@ -190,7 +205,10 @@ function MarginNote({ reason, order, sendBlockedReason }: MarginNoteProps) {
       <p id={statusLineId(order)} role="status" tabIndex={-1} className={`text-sm font-semibold ${statusColor[order.status]}`}>
         {open ? "Not in the agreed scope" : statusLine(order)}
       </p>
-      <p className="mt-1 font-serif text-[17px] leading-snug">{order.title}</p>
+      <p className="sr-only">Marked in the message: “{quote}”</p>
+      <p id={titleId(order)} className="mt-1 font-serif text-[17px] leading-snug">
+        {order.title}
+      </p>
       <p className="mt-1 tabular-nums">
         <span className="font-semibold">+{formatUsd(order.amountCents)}</span>
         <span className="ml-2 text-sm text-ink-soft">{moreDays(order.extraDays)}</span>
