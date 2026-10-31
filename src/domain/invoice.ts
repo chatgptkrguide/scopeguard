@@ -18,14 +18,34 @@ export function invoiceNumberFor(changeOrderId: string): string {
   return `TG-${digits.slice(-KEPT_DIGITS)}`;
 }
 
-const SANDBOX_PAYER_VIEW = /^https:\/\/www\.sandbox\.paypal\.com\/invoice\/p\/[!#$%&-;=?-[\]_a-z~]*$/;
+const SANDBOX_HOST = "www.sandbox.paypal.com";
+const PAYER_VIEW_PATH = "/invoice/p/";
+// The invoice token PayPal puts after the #: "DZQMQREH7LATF7YR" or "INV2-3XAZ-YS6T-5QRP-FPYQ" in the sandbox.
+const PAYER_VIEW_TOKEN = /^#[A-Za-z0-9-]{1,64}$/;
 const MAX_URL_LENGTH = 2048;
 
-// The client's PayPal page, only if it is a sandbox payer link (no other host, scheme or stray characters can
-// end up in an <a href>). The live link format isn't confirmed yet, so live links are not kept (P2 is sandbox only).
+// The client's PayPal page, only if it is exactly a sandbox payer link: https://www.sandbox.paypal.com/invoice/p/#<token>.
+// The link is parsed rather than matched as text, and kept only if parsing gives back the same string, so dot
+// segments (/invoice/p/../../x), encoded dots, a port, user info, a query or stray characters can't reach an
+// <a href> (P2-S2). The live link format isn't confirmed yet, so live links are not kept (P2 is sandbox only).
 export function safePayerViewUrl(url: unknown, environment: "sandbox" | "live"): string | null {
   if (environment !== "sandbox" || typeof url !== "string" || url.length > MAX_URL_LENGTH) return null;
-  return SANDBOX_PAYER_VIEW.test(url) ? url : null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const exact =
+    parsed.href === url &&
+    parsed.protocol === "https:" &&
+    parsed.host === SANDBOX_HOST &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.pathname === PAYER_VIEW_PATH &&
+    parsed.search === "" &&
+    PAYER_VIEW_TOKEN.test(parsed.hash);
+  return exact ? url : null;
 }
 
 // PayPal's invoice status: 16 known values, but an unknown one is kept as text rather than refused.

@@ -60,6 +60,35 @@ describe("결제 링크 검사", () => {
     expect(refused.map((url) => safePayerViewUrl(url, "sandbox"))).toEqual(refused.map(() => null));
   });
 
+  it("경로를 \"..\"·인코딩된 점·이중 슬래시로 돌려 같은 호스트의 다른 곳을 가리키는 링크는 null이 된다", () => {
+    const sneaky = [
+      "https://www.sandbox.paypal.com/invoice/p/../../x",
+      "https://www.sandbox.paypal.com/invoice/p/../../signin#X",
+      "https://www.sandbox.paypal.com/invoice/p/%2e%2e/%2e%2e/x#X",
+      "https://www.sandbox.paypal.com/invoice/p/./#X",
+      "https://www.sandbox.paypal.com/invoice/p//x#X",
+      "https://www.sandbox.paypal.com/invoice/p/x#X",
+      "https://www.sandbox.paypal.com/invoice/p/#../../x",
+      "https://www.sandbox.paypal.com\\invoice\\p\\#X",
+    ];
+
+    expect(sneaky.map((url) => safePayerViewUrl(url, "sandbox"))).toEqual(sneaky.map(() => null));
+  });
+
+  it("포트·사용자 정보·쿼리가 붙었거나 # 뒤 토큰이 없으면 null이 된다", () => {
+    const odd = [
+      "https://www.sandbox.paypal.com:8443/invoice/p/#X",
+      "https://user:pass@www.sandbox.paypal.com/invoice/p/#X",
+      "https://www.sandbox.paypal.com/invoice/p/?next=https://evil.example#X",
+      "https://WWW.SANDBOX.PAYPAL.COM/invoice/p/#X",
+      "https://www.sandbox.paypal.com/invoice/p/",
+      "https://www.sandbox.paypal.com/invoice/p/#",
+      "not a url",
+    ];
+
+    expect(odd.map((url) => safePayerViewUrl(url, "sandbox"))).toEqual(odd.map(() => null));
+  });
+
   it("문자열이 아니거나 live 환경이면 null이다", () => {
     expect(safePayerViewUrl(undefined, "sandbox")).toBeNull();
     expect(safePayerViewUrl({ href: "https://www.sandbox.paypal.com/invoice/p/#X" }, "sandbox")).toBeNull();
