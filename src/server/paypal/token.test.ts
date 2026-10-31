@@ -223,4 +223,33 @@ describe("PayPal 토큰 클라이언트", () => {
 
     expect([error.failure, error.httpStatus]).toEqual(["unavailable", 200]);
   });
+
+  it("rawBody는 받은 문자열을 바이트 그대로 JSON 형식으로 보내고 body와 함께 줄 수 없다", async () => {
+    const VERIFY = "/v1/notifications/verify-webhook-signature";
+    const paypal = fakeFetch({ [`POST ${VERIFY}`]: { status: 200, body: { verification_status: "SUCCESS" } } });
+    const client = createPayPalClient(config, { fetch: paypal.fetch });
+    const raw = '{"b":1,  "a":"caf\\u00e9"}';
+
+    await client.request({ method: "POST", path: VERIFY, rawBody: raw });
+    const both = client.request({ method: "POST", path: VERIFY, rawBody: raw, body: { a: 1 } });
+
+    const [call] = paypal.to(`POST ${VERIFY}`);
+    expect(call.body).toBe(raw);
+    expect(call.headers["content-type"]).toBe("application/json");
+    await expect(both).rejects.toThrow(TypeError);
+    expect(paypal.to(`POST ${VERIFY}`)).toHaveLength(1);
+  });
+
+  it("checkToken은 토큰을 받아 오고, 캐시된 토큰이 있으면 다시 요청하지 않으며, 실패는 PayPalError로 던진다", async () => {
+    const healthy = fakeFetch({});
+    const refused = fakeFetch({ [`POST ${TOKEN}`]: { status: 401, body: invalidClient } });
+    const client = createPayPalClient(config, { fetch: healthy.fetch });
+
+    await client.checkToken();
+    await client.checkToken();
+    const error = await failureOf(createPayPalClient(config, { fetch: refused.fetch }).checkToken());
+
+    expect(healthy.to(`POST ${TOKEN}`)).toHaveLength(1);
+    expect([error.failure, error.httpStatus]).toEqual(["auth", 401]);
+  });
 });
