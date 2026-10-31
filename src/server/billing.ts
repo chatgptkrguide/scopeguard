@@ -1,0 +1,244 @@
+import "server-only";
+import type { ActivityDetail } from "@/domain/activity";
+import type { BillingActionResult, PayPalActionError } from "@/domain/action-result";
+import { canTransition } from "@/domain/change-order";
+import { invoiceNumberFor, SENT_LIKE } from "@/domain/invoice";
+import { formatUsd, toPayPalValue } from "@/domain/money";
+import { activityInsert, activityInsertAfterChange } from "./db/activity";
+import {
+  claimSend,
+  markSent,
+  ownedStatus,
+  readBillingOrder,
+  releaseSendClaim,
+  saveInvoiceId,
+  type BillingOrder,
+} from "./db/change-orders";
+import { getDb, type Db } from "./db/client";
+import { PayPalError } from "./paypal/errors";
+import { cancelInvoice, createInvoice, getInvoice, sendInvoice, type InvoiceInput, type InvoiceRef, type InvoiceView } from "./paypal/invoices";
+import { getPayPal, type PayPalClient } from "./paypal/token";
+
+// Sending a change order: the database and PayPal together. Every database write is one
+// statement or one db.batch(); no transaction stays open while PayPal is called. A state change and its
+// activity step land in the same batch. Nothing here returns an invoice id, a PayPal error text or a debug
+// id to the browser; those go to the server log and the activity record only.
+
+// The PayPal side as plain functions: invoices.ts with the server's client in production, a fake in tests.
+export interface InvoiceGateway {
+  create(input: InvoiceInput): Promise<InvoiceRef & { created: boolean }>;
+  send(invoiceId: string): Promise<"sent" | "already_sent">;
+  get(invoiceId: string): Promise<InvoiceView>;
+  cancel(invoiceId: string): Promise<"cancelled" | "already_cancelled" | "paid">;
+}
+
+export interface BillingDeps {
+  db: Db;
+  paypal: InvoiceGateway | null; // null: no PayPal keys on this server
+  now: () => Date; // read again at each step, so activity times follow the steps
+}
+
+export function invoiceGateway(client: PayPalClient): InvoiceGateway {
+  return {
+    create: (input) => createInvoice(client, input),
+    send: (invoiceId) => sendInvoice(client, invoiceId),
+    get: (invoiceId) => getInvoice(client, invoiceId),
+    cancel: (invoiceId) => cancelInvoice(client, invoiceId),
+  };
+}
+
+export function liveBillingDeps(): BillingDeps {
+  const client = getPayPal();
+  return { db: getDb(), paypal: client && invoiceGateway(client), now: () => new Date() };
+}
+
+// A send claim older than this is abandoned (the request died), and the next send takes it over. Longer than
+// the slowest send: five PayPal calls of at most 10 s each, plus one 401 retry.
+export const SEND_CLAIM_TTL_MS = 2 * 60 * 1000;
+
+type PayPalStep = "create" | "send" | "read" | "cancel";
+
+type BillingError = Extract<BillingActionResult, { ok: false }>["error"];
+const OK: BillingActionResult = { ok: true };
+const fail = (error: BillingError): BillingActionResult => ({ ok: false, error });
+
+const stepText: Record<PayPalStep, string> = {
+  create: "creating the invoice",
+  send: "sending the invoice",
+  read: "reading the invoice back",
+  cancel: "cancelling the invoice",
+};
+
+function failureSummary(error: PayPalError, step: PayPalStep): string {
+  switch (error.failure) {
+    case "rejected":
+      return `PayPal refused the request while ${stepText[step]}${error.issue ? ` (${error.issue})` : ""}; nothing changed here.`;
+    case "auth":
+      return `PayPal didn't accept the app's credentials while ${stepText[step]}.`;
+    case "not_found":
+      return `PayPal couldn't find the invoice while ${stepText[step]}.`;
+    default:
+      return `PayPal didn't respond while ${stepText[step]}; trying again won't bill the client twice.`;
+  }
+}
+
+function actionErrorFor(error: PayPalError): PayPalActionError {
+  if (error.failure === "not_configured") return "not_configured";
+  return error.failure === "rejected" ? "paypal_rejected" : "paypal_unavailable";
+}
+
+const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+
+// What PayPal shows the client. Everything comes from the database, never from the form.
+function invoiceInputFor(order: BillingOrder): InvoiceInput {
+  const { project } = order;
+  const exactCents = (Math.round(order.hours * 100) * project.hourlyRateCents) / 100;
+  const rounded = order.amountCents > exactCents ? ", rounded up to the next $10" : "";
+  return {
+    changeOrderId: order.id,
+    title: order.title,
+    description: `Estimated ${hoursFormat.format(order.hours)} h at ${formatUsd(project.hourlyRateCents)}/h${rounded}`,
+    note: `Change order for ${project.title}. Not part of the agreed scope.`,
+    amountCents: order.amountCents,
+    recipient: { email: project.clientEmail, businessName: project.clientName },
+  };
+}
+
+interface FailureRecord {
+  ownerProjectId: string;
+  changeOrderId: string;
+  step: PayPalStep;
+  summary: string;
+  detail: ActivityDetail;
+}
+
+// Best effort: a failed PayPal call is logged and recorded, but failing to record it never changes the answer.
+async function recordFailure(deps: BillingDeps, record: FailureRecord): Promise<void> {
+  try {
+    await activityInsert(deps.db, {
+      projectId: record.ownerProjectId,
+      changeOrderId: record.changeOrderId,
+      kind: "paypal_failed",
+      actor: "paypal",
+      summary: record.summary,
+      detail: { step: record.step, ...record.detail },
+      at: deps.now().toISOString(),
+    });
+  } catch (error) {
+    console.error("recording a PayPal failure failed", error);
+  }
+}
+
+function errorDetail(error: PayPalError): ActivityDetail {
+  return { httpStatus: error.httpStatus, issue: error.issue, debugId: error.debugId };
+}
+
+// draft → sent. Order of work: check the owner and status, claim the send (one conditional UPDATE), create the
+// invoice unless the order already has one, save its id before sending, send, read it back, then save sent and
+// the payer link. A request that loses the claim stops before PayPal. If PayPal already has an invoice with this
+// order's number (an earlier try created it but never saved the id), createInvoice finds and reuses it.
+export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
+  const { db, paypal, now } = deps;
+  if (!paypal) return fail("not_configured");
+
+  const order = await readBillingOrder(db, ownerProjectId, changeOrderId);
+  if (!order) return fail("not_found");
+  if (order.status === "sent") return OK;
+  if (!canTransition(order.status, "sent") || !(order.amountCents > 0)) return fail("invalid_state");
+
+  const claimedAt = now();
+  const claim = claimedAt.toISOString();
+  const staleBefore = new Date(claimedAt.getTime() - SEND_CLAIM_TTL_MS).toISOString();
+  if (!(await claimSend(db, ownerProjectId, changeOrderId, claim, staleBefore))) {
+    const status = await ownedStatus(db, ownerProjectId, changeOrderId);
+    if (status === "sent") return OK;
+    if (status === "draft") return fail("in_progress");
+    return fail(status === null ? "not_found" : "invalid_state");
+  }
+  const release = () => releaseSendClaim(db, ownerProjectId, changeOrderId, claim);
+
+  // Read again under the claim: a request that held it before may have saved an invoice id since.
+  const current = await readBillingOrder(db, ownerProjectId, changeOrderId);
+  if (current?.status !== "draft") {
+    await release();
+    return fail(current === null ? "not_found" : "invalid_state");
+  }
+  const invoiceNumber = invoiceNumberFor(changeOrderId);
+  let invoiceId = current.paypalInvoiceId;
+  let step: PayPalStep = "create";
+  try {
+    if (!invoiceId) {
+      const created = await paypal.create(invoiceInputFor(current));
+      const [saved] = await db.batch([
+        saveInvoiceId(db, ownerProjectId, changeOrderId, created.id, claim),
+        activityInsertAfterChange(db, {
+          projectId: ownerProjectId,
+          changeOrderId,
+          kind: "invoice_created",
+          actor: "paypal",
+          summary: created.created
+            ? `Created PayPal invoice ${created.invoiceNumber} for ${formatUsd(current.amountCents)} (draft)`
+            : `Found the PayPal invoice from an earlier try: ${created.invoiceNumber}`,
+          detail: {
+            invoiceId: created.id,
+            invoiceNumber: created.invoiceNumber,
+            amount: toPayPalValue(current.amountCents),
+            currency: "USD",
+            reused: !created.created,
+          },
+          at: now().toISOString(),
+        }),
+      ]);
+      if (saved.rowsAffected === 0) {
+        const after = await readBillingOrder(db, ownerProjectId, changeOrderId);
+        if (after?.paypalInvoiceId !== created.id) {
+          await release();
+          return fail("server_error");
+        }
+      }
+      invoiceId = created.id;
+    }
+
+    step = "send";
+    const sendResult = await paypal.send(invoiceId);
+    step = "read";
+    const invoice = await paypal.get(invoiceId);
+
+    // Someone cancelled it in PayPal, or it isn't out yet: don't call it sent (PM decision [6]).
+    if (!SENT_LIKE.has(invoice.status)) {
+      await release();
+      await recordFailure(deps, {
+        ownerProjectId,
+        changeOrderId,
+        step,
+        summary: `PayPal shows the invoice as ${invoice.status}, so it wasn't marked sent.`,
+        detail: { httpStatus: 200, issue: invoice.status, debugId: null },
+      });
+      return fail("paypal_rejected");
+    }
+
+    const sentAt = now().toISOString();
+    const [marked] = await db.batch([
+      markSent(db, ownerProjectId, changeOrderId, invoiceId, sentAt, invoice.payerViewUrl),
+      activityInsertAfterChange(db, {
+        projectId: ownerProjectId,
+        changeOrderId,
+        kind: "invoice_sent",
+        actor: "paypal",
+        summary: `Sent invoice ${invoiceNumber} to ${current.project.clientEmail}`,
+        detail: { invoiceId, paypalStatus: invoice.status, payerViewUrl: invoice.payerViewUrl, alreadySent: sendResult === "already_sent" },
+        at: sentAt,
+      }),
+    ]);
+    if (marked.rowsAffected === 0) {
+      return (await ownedStatus(db, ownerProjectId, changeOrderId)) === "sent" ? OK : fail("invalid_state");
+    }
+    return OK;
+  } catch (error) {
+    if (!(error instanceof PayPalError)) throw error; // a database error: the action answers server_error
+    console.error(`PayPal ${step} failed`, error);
+    await release();
+    await recordFailure(deps, { ownerProjectId, changeOrderId, step, summary: failureSummary(error, step), detail: errorDetail(error) });
+    return fail(actionErrorFor(error));
+  }
+}

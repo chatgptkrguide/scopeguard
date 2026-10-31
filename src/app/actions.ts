@@ -2,7 +2,8 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import type { ActionResult } from "@/domain/action-result";
+import type { ActionResult, BillingActionResult } from "@/domain/action-result";
+import { liveBillingDeps, sendOwnedChangeOrder } from "@/server/billing";
 import { waiveOwnedChangeOrder } from "@/server/db/change-orders";
 import { getDb } from "@/server/db/client";
 import { resetDemoCopy } from "@/server/db/demo";
@@ -49,4 +50,24 @@ export async function resetDemo(_prev: ActionResult | null, formData: FormData):
   }
   refresh();
   return { ok: true };
+}
+
+// Sends the change order as a PayPal invoice. The form carries only the id: amount, client and invoice come
+// from the database. PayPal failures come back as codes; their details stay in the server log and activity.
+export async function sendChangeOrder(_prev: BillingActionResult | null, formData: FormData): Promise<BillingActionResult> {
+  const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
+  if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
+
+  const ownerProjectId = await currentProjectId();
+  if (!ownerProjectId) return { ok: false, error: "not_found" };
+
+  let result: BillingActionResult;
+  try {
+    result = await sendOwnedChangeOrder(liveBillingDeps(), ownerProjectId, changeOrderId.data);
+  } catch (error) {
+    console.error("sending a change order failed", error);
+    return { ok: false, error: "server_error" };
+  }
+  if (result.ok) refresh();
+  return result;
 }

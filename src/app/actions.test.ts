@@ -1,15 +1,23 @@
 import { and, eq, sql } from "drizzle-orm";
 import { refresh } from "next/cache";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoiceNumberFor } from "@/domain/invoice";
+import type { InvoiceGateway } from "@/server/billing";
 import { createDb, type Db } from "@/server/db/client";
 import { ensureDemoCopy } from "@/server/db/demo";
 import { runMigrations } from "@/server/db/migrate";
 import { changeOrders, projects } from "@/server/db/schema";
+import { PayPalError } from "@/server/paypal/errors";
 import { newVisitorId, VISITOR_COOKIE } from "@/server/visitor";
-import { resetDemo, waiveChangeOrder } from "./actions";
+import { resetDemo, sendChangeOrder, waiveChangeOrder } from "./actions";
 
-// Only the framework edges are replaced: the request's cookies, the router refresh, and which database to use.
-const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), db: null as Db | null }));
+// Only the framework edges are replaced: the request's cookies, the router refresh, which database to use,
+// and which PayPal to talk to (a stand-in; the real one is never called from unit tests).
+const request = vi.hoisted(() => ({
+  cookies: new Map<string, string>(),
+  db: null as Db | null,
+  paypal: null as InvoiceGateway | null,
+}));
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({
@@ -20,6 +28,13 @@ vi.mock("next/headers", () => ({
   }),
 }));
 vi.mock("next/cache", () => ({ refresh: vi.fn() }));
+vi.mock("@/server/billing", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/billing")>()),
+  liveBillingDeps: () => {
+    if (!request.db) throw new Error("test database not set");
+    return { db: request.db, paypal: request.paypal, now: () => new Date() };
+  },
+}));
 vi.mock("@/server/db/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/server/db/client")>()),
   getDb: () => {
@@ -216,5 +231,156 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
     await resetDemo(null, form({ projectId: theirs }));
 
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("서버 액션: 발송", () => {
+  let db: Db;
+  const me = newVisitorId();
+  const someoneElse = newVisitorId();
+  let mine: string;
+  let theirs: string;
+  let calls: { create: string[]; send: string[]; cancel: string[] };
+
+  // A healthy sandbox stand-in that records what it was asked to bill.
+  const created: { amountCents: number; email: string }[] = [];
+  function healthyPayPal(): InvoiceGateway {
+    return {
+      create: async (input) => {
+        calls.create.push(input.changeOrderId);
+        created.push({ amountCents: input.amountCents, email: input.recipient.email });
+        return { id: "INV2-DZQM-QREH-7LAT-F7YR", invoiceNumber: invoiceNumberFor(input.changeOrderId), created: true };
+      },
+      send: async (id) => {
+        calls.send.push(id);
+        return "sent";
+      },
+      get: async (id) => ({ id, status: "SENT", invoiceNumber: null, reference: null, amountValue: "650.00", payerViewUrl: "https://www.sandbox.paypal.com/invoice/p/#DZQMQREH7LATF7YR" }),
+      cancel: async (id) => {
+        calls.cancel.push(id);
+        return "cancelled";
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    await runMigrations(db);
+    request.db = db;
+    request.cookies.clear();
+    calls = { create: [], send: [], cancel: [] };
+    created.length = 0;
+    request.paypal = healthyPayPal();
+    mine = (await ensureDemoCopy(db, me, NOW)).projectId;
+    theirs = (await ensureDemoCopy(db, someoneElse, NOW)).projectId;
+  });
+
+  const signIn = (visitorId: string) => request.cookies.set(VISITOR_COOKIE, visitorId);
+  const draftOf = async (projectId: string) =>
+    (await db.select().from(changeOrders).where(and(eq(changeOrders.projectId, projectId), eq(changeOrders.status, "draft"))))[0];
+  const statusOf = async (id: string) => (await db.select().from(changeOrders).where(eq(changeOrders.id, id)))[0]?.status;
+
+  it("발송 액션은 폼의 changeOrderId만 읽고 amountCents·email 필드를 무시한다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+
+    const result = await sendChangeOrder(
+      null,
+      form({ changeOrderId: draft.id, amountCents: "1", email: "attacker@evil.example", projectId: theirs, invoiceId: "INV2-AAAA-BBBB-CCCC-DDDD" }),
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(created).toEqual([{ amountCents: 65000, email: "maya@harborandpine.example" }]);
+    expect(await statusOf(draft.id)).toBe("sent");
+    expect((await db.select().from(changeOrders).where(eq(changeOrders.id, draft.id)))[0].paypalInvoiceId).toBe("INV2-DZQM-QREH-7LAT-F7YR");
+  });
+
+  it("발송이 성공하면 refresh를 한 번 부르고, 실패하면 부르지 않는다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+
+    const theirDraft = await draftOf(theirs);
+    await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    vi.mocked(refresh).mockClear();
+    request.paypal = { ...healthyPayPal(), create: async () => Promise.reject(new PayPalError("unavailable", 503, null, null)) };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    signIn(someoneElse);
+    const failed = await sendChangeOrder(null, form({ changeOrderId: theirDraft.id }));
+
+    expect(failed).toEqual({ ok: false, error: "paypal_unavailable" });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("쿠키가 없으면 발송은 not_found이고 PayPal을 부르지 않는다", async () => {
+    const draft = await draftOf(mine);
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "not_found" });
+    expect(calls.create).toEqual([]);
+    expect(await statusOf(draft.id)).toBe("draft");
+  });
+
+  it("견적 id가 UUID가 아니면 발송은 invalid_input이다", async () => {
+    signIn(me);
+
+    const results = [
+      await sendChangeOrder(null, form({ changeOrderId: "demo-co2" })),
+      await sendChangeOrder(null, form({ changeOrderId: "" })),
+      await sendChangeOrder(null, form({})),
+    ];
+
+    expect(results).toEqual(Array(3).fill({ ok: false, error: "invalid_input" }));
+    expect(calls.create).toEqual([]);
+  });
+
+  it("다른 사본의 견적 id로 발송하면 not_found이고 그 견적은 그대로다", async () => {
+    signIn(me);
+    const theirDraft = await draftOf(theirs);
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: theirDraft.id }));
+
+    expect(result).toEqual({ ok: false, error: "not_found" });
+    expect(calls.create).toEqual([]);
+    expect(await statusOf(theirDraft.id)).toBe("draft");
+  });
+
+  it("PayPal 키가 없는 서버에서 발송하면 not_configured이고 refresh하지 않는다", async () => {
+    signIn(me);
+    request.paypal = null;
+    const draft = await draftOf(mine);
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "not_configured" });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(await statusOf(draft.id)).toBe("draft");
+  });
+
+  it("예상 못 한 예외는 server_error로 바뀌고 오류 원문이 브라우저로 가지 않는다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    request.paypal = { ...healthyPayPal(), create: async () => Promise.reject(new Error("socket hang up at 10.0.0.7 with debug 9f8e")) };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "server_error" });
+    expect(JSON.stringify(result)).not.toMatch(/socket|10\.0\.0\.7|9f8e/);
+    expect(logged).toHaveBeenCalledWith("sending a change order failed", expect.any(Error));
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("PayPal 오류의 issue·debug id는 브라우저로 가지 않고 코드만 간다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    request.paypal = { ...healthyPayPal(), send: async () => Promise.reject(new PayPalError("rejected", 422, "CANNOT_SEND_INVOICE", "f5a1c27e3b9d4")) };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "paypal_rejected" });
+    expect(JSON.stringify(result)).not.toMatch(/CANNOT_SEND|f5a1c27e3b9d4|INV2/);
   });
 });
