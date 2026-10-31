@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { refresh } from "next/cache";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, type Db } from "@/server/db/client";
@@ -157,6 +157,53 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
     ];
 
     expect(results).toEqual(Array(3).fill({ ok: false, error: "invalid_input" }));
+  });
+
+  it("재설정 중 DB 오류가 나면 던지지 않고 server_error를 돌려주며 사본은 그대로다", async () => {
+    signIn(me);
+    await waiveChangeOrder(null, form({ changeOrderId: (await draftOf(mine)).id }));
+    vi.mocked(refresh).mockClear();
+    const ordersBefore = await ordersOf(mine);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The reset batch fails on its fourth statement, after it already deleted change orders.
+    await db.run(sql`CREATE TRIGGER fail_reset BEFORE DELETE ON scope_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`);
+
+    const result = await resetDemo(null, form({ projectId: mine }));
+
+    expect(result).toEqual({ ok: false, error: "server_error" });
+    expect(await ordersOf(mine)).toEqual(ordersBefore);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith("resetting the demo copy failed", expect.anything());
+  });
+
+  it("무료 처리 중 DB에 닿지 못하면 던지지 않고 server_error를 돌려준다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    db.$client.close();
+
+    const result = await waiveChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "server_error" });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith("waiving a change order failed", expect.anything());
+  });
+
+  it("소유 확인에서 막힌 요청은 DB 오류와 다른 코드(not_found·invalid_input)를 돌려준다", async () => {
+    signIn(me);
+    db.$client.close(); // a refused request must not even need the database
+
+    const results = [
+      await resetDemo(null, form({ projectId: theirs })),
+      await resetDemo(null, form({ projectId: "demo" })),
+      await waiveChangeOrder(null, form({ changeOrderId: "not-a-uuid" })),
+    ];
+
+    expect(results).toEqual([
+      { ok: false, error: "not_found" },
+      { ok: false, error: "invalid_input" },
+      { ok: false, error: "invalid_input" },
+    ]);
   });
 
   it("실패하면 refresh를 부르지 않는다", async () => {

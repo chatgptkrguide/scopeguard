@@ -14,6 +14,7 @@ const errorText: Record<ActionError, string> = {
   invalid_input: "This change order isn't in your demo copy. Reload the page.",
   not_found: "This change order isn't in your demo copy. Reload the page.",
   invalid_state: "This change order was already updated. Reload to see it.",
+  server_error: "This couldn't be saved just now. Nothing changed; try again.",
 };
 
 // The buttons under an open change order. The browser sends only the order id; the server decides the rest.

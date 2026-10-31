@@ -22,7 +22,13 @@ export async function waiveChangeOrder(_prev: ActionResult | null, formData: For
   const ownerProjectId = await currentProjectId();
   if (!ownerProjectId) return { ok: false, error: "not_found" };
 
-  const result = await waiveOwnedChangeOrder(getDb(), ownerProjectId, changeOrderId.data);
+  let result: ActionResult;
+  try {
+    result = await waiveOwnedChangeOrder(getDb(), ownerProjectId, changeOrderId.data);
+  } catch (error) {
+    console.error("waiving a change order failed", error);
+    return { ok: false, error: "server_error" };
+  }
   if (result.ok) refresh();
   return result;
 }
@@ -34,7 +40,13 @@ export async function resetDemo(_prev: ActionResult | null, formData: FormData):
   // Someone else's copy and a copy that doesn't exist answer the same way.
   if (projectId.data !== (await currentProjectId())) return { ok: false, error: "not_found" };
 
-  await resetDemoCopy(getDb(), projectId.data, new Date());
+  try {
+    await resetDemoCopy(getDb(), projectId.data, new Date());
+  } catch (error) {
+    // The reset is one batch, so a failure leaves the copy exactly as it was.
+    console.error("resetting the demo copy failed", error);
+    return { ok: false, error: "server_error" };
+  }
   refresh();
   return { ok: true };
 }

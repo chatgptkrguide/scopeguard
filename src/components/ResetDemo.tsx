@@ -2,10 +2,18 @@
 
 import { useActionState } from "react";
 import { resetDemo } from "@/app/actions";
+import type { ActionError } from "@/domain/action-result";
 
 export interface ResetDemoProps {
   projectId: string;
 }
+
+const errorText: Record<ActionError, string> = {
+  invalid_input: "This isn't your demo copy. Reload the page.",
+  not_found: "This isn't your demo copy. Reload the page.",
+  invalid_state: "The demo changed while resetting. Reload the page.", // reset never returns this today
+  server_error: "The demo couldn't be reset just now. Nothing changed; try again.",
+};
 
 // Puts the visitor's copy back to the starting demo. The server checks the id against the visitor cookie.
 export function ResetDemo({ projectId }: ResetDemoProps) {
@@ -24,7 +32,7 @@ export function ResetDemo({ projectId }: ResetDemoProps) {
       </button>
       {state && !state.ok && (
         <p role="alert" className="text-sm font-semibold text-mark">
-          This isn&apos;t your demo copy. Reload the page.
+          {errorText[state.error]}
         </p>
       )}
     </form>
