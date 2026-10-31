@@ -74,7 +74,12 @@ The database repeats the core rules as CHECK constraints (known status, no negat
     │ include at no charge                         │ cancel (cancels the PayPal invoice)
     ▼                                              ▼
   waived                                       cancelled
+                                                   ▲
+  draft ───────────────────────────────────────────┘
+        the invoice under this number was already cancelled in PayPal
 ```
+
+`draft → cancelled` happens only when PayPal reports that the invoice for this order's number is already cancelled (or can never be paid), so the finding can be quoted again instead of getting stuck.
 
 Allowed transitions are defined once in `src/domain/change-order.ts`; everything else is rejected.
 
@@ -82,7 +87,7 @@ Allowed transitions are defined once in `src/domain/change-order.ts`; everything
 
 **Review a message.** The user pastes a client message. A server action stores it, sends the agreed scope plus the message to Claude, and asks for findings in a fixed JSON schema (quote, title, estimated hours, reason). The response is validated with zod; findings whose quote is not found in the message are dropped. Curly and straight quote marks match each other, a repeated phrase maps to its next free occurrence, and when two quotes overlap the longer one wins. Each finding becomes a `draft` change order priced at `hours × rate`, rounded up to the next $10.
 
-**Send a change order.** The server action receives only the change order id and loads the amount, status, and client from the database. It checks that `draft → sent` is allowed and the amount is above zero, then marks the order as being sent with a single conditional update, so a second request for the same order stops there. If the order has no invoice id yet, it creates a draft PayPal invoice whose invoice number is derived from the change order id (`TG-` plus 22 base-36 characters). PayPal's Invoicing API ignores `PayPal-Request-Id` (checked in the sandbox on Oct 31, 2026: the same id created a new invoice each time), but it refuses a second invoice with the same number, even when both requests arrive at once. When it answers `DUPLICATE_INVOICE_NUMBER`, the app looks the invoice up by number, checks its reference and amount, and reuses it. The invoice id is saved before sending, so a retry reuses it. Sending again answers `INVOICE_ALREADY_SENT`, which counts as sent. After sending, it reads the invoice back and stores `detail.metadata.recipient_view_url` as the payer view URL, only if it is a `https://www.sandbox.paypal.com/invoice/p/` link, so the demo can open the client's view. PayPal's error names come from sandbox responses, not from the published schema, so any 422 the app doesn't recognize is treated as a rejection that changes nothing.
+**Send a change order.** The server action receives only the change order id and loads the amount, status, and client from the database. It checks that `draft → sent` is allowed and the amount is above zero, then marks the order as being sent with a single conditional update, so a second request for the same order stops there. If the order has no invoice id yet, it creates a draft PayPal invoice whose invoice number is derived from the change order id (`TG-` plus 22 base-36 characters). PayPal's Invoicing API ignores `PayPal-Request-Id` (checked in the sandbox on Oct 31, 2026: the same id created a new invoice each time), but it refuses a second invoice with the same number, even when both requests arrive at once. When it answers `DUPLICATE_INVOICE_NUMBER`, the app looks the invoice up by number, checks its reference and amount, and reuses it. The invoice id is saved before sending, so a retry reuses it. Sending again answers `INVOICE_ALREADY_SENT`, which counts as sent. After sending, it reads the invoice back and stores `detail.metadata.recipient_view_url` as the payer view URL, only if it is a `https://www.sandbox.paypal.com/invoice/p/` link, so the demo can open the client's view. PayPal's error names come from sandbox responses, not from the published schema, so any 422 the app doesn't recognize is treated as a rejection that changes nothing. If PayPal may already have sent the invoice but the app couldn't confirm it (the read-back failed, PayPal still showed a draft, or saving `sent` failed), the order stays a draft that holds the invoice id, the screen offers "Send again" instead of "Include at no charge", and sending again settles it. A draft that holds an invoice id, or is being sent, can't be waived. The whole server sends at most 10 invoices a minute and 200 a day (counted from activity events and in memory), so a public demo can't exhaust the shared sandbox account; per-copy limits come with the public demo work.
 
 **Cancel a change order.** Only a `sent` order can be cancelled, after a confirmation step. The app asks PayPal to cancel the invoice; `INVOICE_CANCELED_ALREADY` counts as cancelled, and `CANNOT_CANCEL_PAID_INVOICE` leaves the order `sent` for the payment webhook or "Check payment" to settle. A cancelled order's finding can be quoted again: a new draft with a new id (so a new invoice number), priced again from the rate.
 
@@ -121,6 +126,7 @@ src/
     ai/                     scope review prompt + Claude client
 drizzle/                    SQL migrations generated by drizzle-kit
 scripts/                    db.mts: migrate and seed from the command line
+test/                       test-only helpers (fake PayPal); app code may not import them
 docs/                       this file
 ```
 
