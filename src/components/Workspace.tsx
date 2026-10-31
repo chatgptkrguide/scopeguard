@@ -223,7 +223,7 @@ function Composer({ client }: ComposerProps) {
         <button
           type="button"
           disabled
-          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet disabled:cursor-not-allowed disabled:opacity-40"
+          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet disabled:cursor-not-allowed disabled:bg-rule disabled:text-ink-soft"
         >
           Check scope
         </button>

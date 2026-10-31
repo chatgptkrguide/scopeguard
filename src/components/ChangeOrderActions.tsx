@@ -31,7 +31,7 @@ export function ChangeOrderActions({ order, sendBlockedReason }: ChangeOrderActi
           type="button"
           aria-disabled={sendBlockedReason ? true : undefined}
           aria-describedby={sendBlockedReason ? reasonId : undefined}
-          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-not-allowed aria-disabled:opacity-45"
+          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-not-allowed aria-disabled:bg-rule aria-disabled:text-ink-soft"
         >
           Send change order
         </button>
