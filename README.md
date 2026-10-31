@@ -29,7 +29,7 @@ The agent proposes; nothing is billed until you approve it. The design and the p
 ```bash
 pnpm install
 cp .env.example .env.local   # add PayPal sandbox and Anthropic keys
-pnpm db:seed                 # create data/tollgate.db with the demo project
+pnpm db:migrate              # create data/tollgate.db; each browser gets its own demo copy on first visit
 pnpm dev
 ```
 
