@@ -206,6 +206,8 @@ interface ComposerProps {
 }
 
 // Message review arrives in P4; until then the box is shown with its button switched off.
+const CHECK_BLOCKED_REASON = "Scope checking isn't switched on yet, so nothing is sent to Claude.";
+
 function Composer({ client }: ComposerProps) {
   return (
     <div className="border-t border-rule bg-paper/50 px-5 py-6 sm:px-8">
@@ -214,20 +216,28 @@ function Composer({ client }: ComposerProps) {
       </label>
       <textarea
         id="incoming"
+        aria-describedby="incoming-help check-blocked"
         rows={3}
         placeholder="Paste their latest email or chat message"
         className="mt-2 block w-full max-w-[62ch] resize-y rounded-md border border-ink-soft bg-sheet px-3 py-2 font-serif text-[17px] leading-relaxed placeholder:text-ink-soft"
       />
       <div className="mt-3 flex max-w-[62ch] flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-ink-soft">Claude compares it with scope version 1.</p>
+        <p id="incoming-help" className="text-sm text-ink-soft">
+          Claude compares it with scope version 1.
+        </p>
+        {/* aria-disabled, not disabled: keyboard and screen reader users can still reach it and hear why. */}
         <button
           type="button"
-          disabled
-          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet disabled:cursor-not-allowed disabled:bg-rule disabled:text-ink-soft"
+          aria-disabled="true"
+          aria-describedby="check-blocked"
+          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-not-allowed aria-disabled:bg-rule aria-disabled:text-ink-soft"
         >
           Check scope
         </button>
       </div>
+      <p id="check-blocked" className="mt-2 max-w-[62ch] text-sm leading-relaxed text-ink-soft">
+        {CHECK_BLOCKED_REASON}
+      </p>
     </div>
   );
 }
