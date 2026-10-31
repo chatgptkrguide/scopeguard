@@ -1,12 +1,13 @@
 import "server-only";
 import type { ActivityDetail } from "@/domain/activity";
-import type { BillingActionResult, PayPalActionError } from "@/domain/action-result";
+import type { ActionResult, BillingActionResult, PayPalActionError } from "@/domain/action-result";
 import { canTransition } from "@/domain/change-order";
 import { invoiceNumberFor, SENT_LIKE } from "@/domain/invoice";
-import { formatUsd, toPayPalValue } from "@/domain/money";
+import { extraDaysForHours, formatUsd, priceForHours, toPayPalValue } from "@/domain/money";
 import { activityInsert, activityInsertAfterChange } from "./db/activity";
 import {
   claimSend,
+  markCancelled,
   markSent,
   ownedStatus,
   readBillingOrder,
@@ -15,11 +16,13 @@ import {
   type BillingOrder,
 } from "./db/change-orders";
 import { getDb, type Db } from "./db/client";
+import { isUniqueViolation } from "./db/errors";
+import { changeOrders } from "./db/schema";
 import { PayPalError } from "./paypal/errors";
 import { cancelInvoice, createInvoice, getInvoice, sendInvoice, type InvoiceInput, type InvoiceRef, type InvoiceView } from "./paypal/invoices";
 import { getPayPal, type PayPalClient } from "./paypal/token";
 
-// Sending a change order: the database and PayPal together. Every database write is one
+// Sending, cancelling and quoting again: the database and PayPal together. Every database write is one
 // statement or one db.batch(); no transaction stays open while PayPal is called. A state change and its
 // activity step land in the same batch. Nothing here returns an invoice id, a PayPal error text or a debug
 // id to the browser; those go to the server log and the activity record only.
@@ -241,4 +244,84 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     await recordFailure(deps, { ownerProjectId, changeOrderId, step, summary: failureSummary(error, step), detail: errorDetail(error) });
     return fail(actionErrorFor(error));
   }
+}
+
+// sent → cancelled, after PayPal cancels the invoice. No claim is needed: a second cancel answers
+// INVOICE_CANCELED_ALREADY and the UPDATE only moves a sent order. A paid invoice stays sent here; the payment
+// webhook or "Check payment" (P3) moves it to paid.
+export async function cancelOwnedChangeOrder(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
+  const { db, paypal, now } = deps;
+  if (!paypal) return fail("not_configured");
+
+  const order = await readBillingOrder(db, ownerProjectId, changeOrderId);
+  if (!order) return fail("not_found");
+  if (order.status === "cancelled") return OK;
+  if (order.status !== "sent" || !order.paypalInvoiceId) return fail("invalid_state");
+  const invoiceId = order.paypalInvoiceId;
+
+  let result: "cancelled" | "already_cancelled" | "paid";
+  try {
+    result = await paypal.cancel(invoiceId);
+  } catch (error) {
+    if (!(error instanceof PayPalError)) throw error;
+    console.error("PayPal cancel failed", error);
+    await recordFailure(deps, { ownerProjectId, changeOrderId, step: "cancel", summary: failureSummary(error, "cancel"), detail: errorDetail(error) });
+    return fail(actionErrorFor(error));
+  }
+
+  if (result === "paid") {
+    await recordFailure(deps, {
+      ownerProjectId,
+      changeOrderId,
+      step: "cancel",
+      summary: "PayPal says the client already paid, so the invoice wasn't cancelled.",
+      detail: { httpStatus: 422, issue: "CANNOT_CANCEL_PAID_INVOICE", debugId: null },
+    });
+    return fail("already_paid");
+  }
+
+  const [moved] = await db.batch([
+    markCancelled(db, ownerProjectId, changeOrderId),
+    activityInsertAfterChange(db, {
+      projectId: ownerProjectId,
+      changeOrderId,
+      kind: "invoice_cancelled",
+      actor: "paypal",
+      summary: `Cancelled invoice ${invoiceNumberFor(changeOrderId)} in PayPal`,
+      detail: { invoiceId, alreadyCancelled: result === "already_cancelled" },
+      at: now().toISOString(),
+    }),
+  ]);
+  if (moved.rowsAffected === 0) {
+    const status = await ownedStatus(db, ownerProjectId, changeOrderId);
+    if (status === "cancelled") return OK;
+    return fail(status === null ? "not_found" : "invalid_state");
+  }
+  return OK;
+}
+
+// A cancelled order's finding quoted again: a new draft with a new id (so PayPal gets a new invoice number),
+// priced again from the project's rate rather than copied (principle 2). PM decision [4].
+export async function requoteOwnedChangeOrder(db: Db, ownerProjectId: string, cancelledOrderId: string): Promise<ActionResult> {
+  const order = await readBillingOrder(db, ownerProjectId, cancelledOrderId);
+  if (!order) return { ok: false, error: "not_found" };
+  if (order.status !== "cancelled") return { ok: false, error: "invalid_state" };
+
+  try {
+    await db.insert(changeOrders).values({
+      id: crypto.randomUUID(),
+      projectId: ownerProjectId,
+      findingId: order.findingId,
+      title: order.title,
+      hours: order.hours,
+      amountCents: priceForHours(order.hours, order.project.hourlyRateCents),
+      extraDays: extraDaysForHours(order.hours, order.project.hoursPerDay),
+      status: "draft",
+    });
+  } catch (error) {
+    // The finding already has a live order (quoted again by another request): that is the result wanted.
+    if (isUniqueViolation(error)) return { ok: true };
+    throw error;
+  }
+  return { ok: true };
 }

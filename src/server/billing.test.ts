@@ -2,7 +2,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoiceNumberFor } from "@/domain/invoice";
 import {
+  cancelOwnedChangeOrder,
   invoiceGateway,
+  requoteOwnedChangeOrder,
   sendOwnedChangeOrder,
   SEND_CLAIM_TTL_MS,
   type BillingDeps,
@@ -444,6 +446,182 @@ describe("견적 발송·취소·다시 견적", () => {
     });
   });
 
+  describe("취소", () => {
+    it("발송된 견적을 취소하면 PayPal 취소 뒤 cancelled가 된다", async () => {
+      const id = await sentOrder();
+      const paypal = fakeGateway();
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, id);
+
+      expect(result).toEqual({ ok: true });
+      expect(paypal.calls.cancel).toEqual([INVOICE_ID]);
+      expect((await row(id)).status).toBe("cancelled");
+    });
+
+    it("PayPal이 이미 취소됐다고 하면 cancelled로 맞추고 ok다", async () => {
+      const id = await sentOrder();
+      const paypal = fakeGateway({ cancel: async () => "already_cancelled" });
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, id);
+
+      expect(result).toEqual({ ok: true });
+      expect((await row(id)).status).toBe("cancelled");
+      expect((await listActivity(db, mine)).at(-1)?.detail).toMatchObject({ alreadyCancelled: true });
+    });
+
+    it("PayPal이 이미 결제됐다고 하면 already_paid이고 상태는 sent 그대로다", async () => {
+      const id = await sentOrder();
+      const paypal = fakeGateway({ cancel: async () => "paid" });
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, id);
+
+      expect(result).toEqual({ ok: false, error: "already_paid" });
+      expect((await row(id)).status).toBe("sent");
+      expect((await listActivity(db, mine)).at(-1)).toMatchObject({ kind: "paypal_failed", detail: { step: "cancel", issue: "CANNOT_CANCEL_PAID_INVOICE" } });
+    });
+
+    it("DB에서 paid인 견적은 invalid_state이고 PayPal을 부르지 않는다", async () => {
+      const paid = await orderOf(mine, "paid");
+      const paypal = fakeGateway();
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, paid.id);
+
+      expect(result).toEqual({ ok: false, error: "invalid_state" });
+      expect(paypal.total()).toBe(0);
+    });
+
+    it("draft·waived 견적은 취소할 수 없고 PayPal을 부르지 않는다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const waived = await orderOf(theirs, "draft");
+      await db.update(changeOrders).set({ status: "waived" }).where(eq(changeOrders.id, waived.id));
+      const paypal = fakeGateway();
+
+      const results = [await cancelOwnedChangeOrder(deps(paypal.gateway), mine, draft.id), await cancelOwnedChangeOrder(deps(paypal.gateway), theirs, waived.id)];
+
+      expect(results).toEqual(Array(2).fill({ ok: false, error: "invalid_state" }));
+      expect(paypal.total()).toBe(0);
+    });
+
+    it("다른 사본의 견적은 not_found이고 PayPal을 부르지 않는다", async () => {
+      const id = await sentOrder();
+      const paypal = fakeGateway();
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), theirs, id);
+
+      expect(result).toEqual({ ok: false, error: "not_found" });
+      expect(paypal.total()).toBe(0);
+      expect((await row(id)).status).toBe("sent");
+    });
+
+    it("PayPal이 응답하지 않으면 paypal_unavailable이고 상태는 sent 그대로다", async () => {
+      const id = await sentOrder();
+      const paypal = fakeGateway({ cancel: async () => Promise.reject(new PayPalError("unavailable", 500, "INTERNAL_SERVER_ERROR", "d07c9a1e6b3f5")) });
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_unavailable" });
+      expect((await row(id)).status).toBe("sent");
+    });
+
+    it("처음 보는 이름의 422로 취소가 거부되면 paypal_rejected이고 상태는 sent 그대로다", async () => {
+      const id = await sentOrder();
+      const pp = realGateway({ [`POST /v2/invoicing/invoices/${INVOICE_ID}/cancel`]: { status: 422, body: { name: "UNPROCESSABLE_ENTITY", details: [{ issue: "INVOICE_LOCKED" }] } } });
+
+      const result = await cancelOwnedChangeOrder(deps(pp.gateway), mine, id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_rejected" });
+      expect((await row(id)).status).toBe("sent");
+    });
+
+    it("이미 cancelled인 견적은 PayPal을 부르지 않고 ok다", async () => {
+      const id = await sentOrder();
+      await cancelOwnedChangeOrder(deps(fakeGateway().gateway), mine, id);
+      const paypal = fakeGateway();
+
+      const result = await cancelOwnedChangeOrder(deps(paypal.gateway), mine, id);
+
+      expect(result).toEqual({ ok: true });
+      expect(paypal.total()).toBe(0);
+    });
+
+    it("PayPal 키가 없으면 취소도 not_configured다", async () => {
+      const id = await sentOrder();
+
+      expect(await cancelOwnedChangeOrder(deps(null), mine, id)).toEqual({ ok: false, error: "not_configured" });
+      expect((await row(id)).status).toBe("sent");
+    });
+  });
+
+  describe("다시 견적", () => {
+    async function cancelledOrder(): Promise<string> {
+      const id = await sentOrder();
+      expect(await cancelOwnedChangeOrder(deps(fakeGateway().gateway), mine, id)).toEqual({ ok: true });
+      return id;
+    }
+    const liveOrders = async (findingId: string) =>
+      (await db.select().from(changeOrders).where(eq(changeOrders.findingId, findingId))).filter((o) => o.status !== "cancelled");
+
+    it("취소된 견적을 다시 견적하면 같은 항목에 새 draft가 생기고 금액은 시급으로 다시 계산된다", async () => {
+      const id = await cancelledOrder();
+      const cancelled = await row(id);
+      await db.update(projects).set({ hourlyRateCents: 6000 }).where(eq(projects.id, mine)); // $60/h since the first quote
+
+      const result = await requoteOwnedChangeOrder(db, mine, id);
+
+      const [fresh] = await liveOrders(cancelled.findingId);
+      expect(result).toEqual({ ok: true });
+      expect(fresh).toMatchObject({ status: "draft", title: cancelled.title, hours: 13, amountCents: 78000, extraDays: 3, paypalInvoiceId: null, sentAt: null });
+      expect((await row(id)).status).toBe("cancelled");
+    });
+
+    it("다시 견적을 동시에 두 번 해도 draft는 하나다", async () => {
+      const id = await cancelledOrder();
+
+      const results = await Promise.all([requoteOwnedChangeOrder(db, mine, id), requoteOwnedChangeOrder(db, mine, id)]);
+
+      expect(results).toEqual([{ ok: true }, { ok: true }]);
+      expect(await liveOrders((await row(id)).findingId)).toHaveLength(1);
+    });
+
+    it("cancelled가 아닌 견적은 다시 견적할 수 없다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const paid = await orderOf(mine, "paid");
+
+      const results = [await requoteOwnedChangeOrder(db, mine, draft.id), await requoteOwnedChangeOrder(db, mine, paid.id)];
+
+      expect(results).toEqual(Array(2).fill({ ok: false, error: "invalid_state" }));
+    });
+
+    it("다른 사본의 취소된 견적은 not_found다", async () => {
+      const id = await cancelledOrder();
+
+      expect(await requoteOwnedChangeOrder(db, theirs, id)).toEqual({ ok: false, error: "not_found" });
+    });
+
+    it("다시 견적한 draft는 새 견적 id라 청구서 번호도 새로 나온다", async () => {
+      const id = await cancelledOrder();
+
+      await requoteOwnedChangeOrder(db, mine, id);
+
+      const [fresh] = await liveOrders((await row(id)).findingId);
+      expect(fresh.id).not.toBe(id);
+      expect(invoiceNumberFor(fresh.id)).not.toBe(invoiceNumberFor(id));
+    });
+
+    it("다시 견적한 draft를 발송하면 새 번호로 청구서를 만든다", async () => {
+      const id = await cancelledOrder();
+      await requoteOwnedChangeOrder(db, mine, id);
+      const [fresh] = await liveOrders((await row(id)).findingId);
+      const paypal = fakeGateway({ create: async (input) => ({ id: "INV2-V26G-W6TK-FWP3-5XKU", invoiceNumber: invoiceNumberFor(input.changeOrderId), created: true }) });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, fresh.id);
+
+      expect(result).toEqual({ ok: true });
+      expect(paypal.calls.create[0].changeOrderId).toBe(fresh.id);
+      expect((await row(fresh.id)).paypalInvoiceId).toBe("INV2-V26G-W6TK-FWP3-5XKU");
+    });
+  });
+
   describe("활동 기록", () => {
     it("발송하면 invoice_created, invoice_sent가 그 순서로 남고 시각도 앞뒤가 맞다", async () => {
       const draft = await orderOf(mine, "draft");
@@ -461,6 +639,17 @@ describe("견적 발송·취소·다시 견적", () => {
       expect(events[1].summary).toBe(`Sent invoice ${invoiceNumberFor(draft.id)} to maya@harborandpine.example`);
       expect(events[0].detail).toEqual({ invoiceId: INVOICE_ID, invoiceNumber: invoiceNumberFor(draft.id), amount: "650.00", currency: "USD", reused: false });
       expect(events[1].detail).toEqual({ invoiceId: INVOICE_ID, paypalStatus: "SENT", payerViewUrl: PAYER_VIEW_URL, alreadySent: false });
+    });
+
+    it("취소하면 invoice_cancelled가 발송 기록 뒤에 남는다", async () => {
+      const id = await sentOrder();
+
+      await cancelOwnedChangeOrder(deps(fakeGateway().gateway), mine, id);
+
+      const events = await listActivity(db, mine);
+      expect(events.map((e) => e.kind)).toEqual(["invoice_created", "invoice_sent", "invoice_cancelled"]);
+      expect(events[1].at < events[2].at).toBe(true);
+      expect(events[2]).toMatchObject({ summary: `Cancelled invoice ${invoiceNumberFor(id)} in PayPal`, detail: { invoiceId: INVOICE_ID, alreadyCancelled: false } });
     });
 
     it("PayPal 실패는 paypal_failed로 남고 단계·HTTP 상태·issue·debug id만 담는다", async () => {
@@ -483,13 +672,15 @@ describe("견적 발송·취소·다시 견적", () => {
         "POST /v2/invoicing/invoices": [{ status: 401, body: invalidToken }, { status: 201, body: createdDraft }],
         [`POST /v2/invoicing/invoices/${INVOICE_ID}/send`]: [{ status: 500, body: { name: "INTERNAL_SERVER_ERROR", debug_id: "d07c9a1e6b3f5" } }, { status: 200, body: sendResponse }],
         [`GET /v2/invoicing/invoices/${INVOICE_ID}`]: { status: 200, body: { ...sentInvoice, detail: { ...sentInvoice.detail, reference: draft.id } } },
+        [`POST /v2/invoicing/invoices/${INVOICE_ID}/cancel`]: { status: 204 },
       });
 
       await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id); // fails at send (500)
       await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id); // reuses the saved id and sends
+      await cancelOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
 
       const stored = JSON.stringify(await db.all(sql`SELECT * FROM activity_events`));
-      expect(await kinds(mine)).toEqual(["invoice_created", "paypal_failed", "invoice_sent"]);
+      expect(await kinds(mine)).toEqual(["invoice_created", "paypal_failed", "invoice_sent", "invoice_cancelled"]);
       expect(pp.to("POST /v1/oauth2/token").length).toBeGreaterThan(0);
       for (const secret of [token, "stand-in-client-secret-0123456789", Buffer.from("stand-in-client-id:stand-in-client-secret-0123456789").toString("base64")]) {
         expect(stored).not.toContain(secret);

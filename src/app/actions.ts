@@ -3,7 +3,7 @@
 import { refresh } from "next/cache";
 import { z } from "zod";
 import type { ActionResult, BillingActionResult } from "@/domain/action-result";
-import { liveBillingDeps, sendOwnedChangeOrder } from "@/server/billing";
+import { cancelOwnedChangeOrder, liveBillingDeps, requoteOwnedChangeOrder, sendOwnedChangeOrder } from "@/server/billing";
 import { waiveOwnedChangeOrder } from "@/server/db/change-orders";
 import { getDb } from "@/server/db/client";
 import { resetDemoCopy } from "@/server/db/demo";
@@ -66,6 +66,44 @@ export async function sendChangeOrder(_prev: BillingActionResult | null, formDat
     result = await sendOwnedChangeOrder(liveBillingDeps(), ownerProjectId, changeOrderId.data);
   } catch (error) {
     console.error("sending a change order failed", error);
+    return { ok: false, error: "server_error" };
+  }
+  if (result.ok) refresh();
+  return result;
+}
+
+// Cancels the sent change order's PayPal invoice, then marks it cancelled.
+export async function cancelChangeOrder(_prev: BillingActionResult | null, formData: FormData): Promise<BillingActionResult> {
+  const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
+  if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
+
+  const ownerProjectId = await currentProjectId();
+  if (!ownerProjectId) return { ok: false, error: "not_found" };
+
+  let result: BillingActionResult;
+  try {
+    result = await cancelOwnedChangeOrder(liveBillingDeps(), ownerProjectId, changeOrderId.data);
+  } catch (error) {
+    console.error("cancelling a change order failed", error);
+    return { ok: false, error: "server_error" };
+  }
+  if (result.ok) refresh();
+  return result;
+}
+
+// Quotes a cancelled change order's finding again, as a new draft priced from the rate. No PayPal call.
+export async function requoteChangeOrder(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
+  if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
+
+  const ownerProjectId = await currentProjectId();
+  if (!ownerProjectId) return { ok: false, error: "not_found" };
+
+  let result: ActionResult;
+  try {
+    result = await requoteOwnedChangeOrder(getDb(), ownerProjectId, changeOrderId.data);
+  } catch (error) {
+    console.error("quoting a change order again failed", error);
     return { ok: false, error: "server_error" };
   }
   if (result.ok) refresh();

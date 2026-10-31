@@ -9,7 +9,7 @@ import { runMigrations } from "@/server/db/migrate";
 import { changeOrders, projects } from "@/server/db/schema";
 import { PayPalError } from "@/server/paypal/errors";
 import { newVisitorId, VISITOR_COOKIE } from "@/server/visitor";
-import { resetDemo, sendChangeOrder, waiveChangeOrder } from "./actions";
+import { cancelChangeOrder, requoteChangeOrder, resetDemo, sendChangeOrder, waiveChangeOrder } from "./actions";
 
 // Only the framework edges are replaced: the request's cookies, the router refresh, which database to use,
 // and which PayPal to talk to (a stand-in; the real one is never called from unit tests).
@@ -234,7 +234,7 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
   });
 });
 
-describe("서버 액션: 발송", () => {
+describe("서버 액션: 발송·취소·다시 견적", () => {
   let db: Db;
   const me = newVisitorId();
   const someoneElse = newVisitorId();
@@ -295,7 +295,7 @@ describe("서버 액션: 발송", () => {
     expect((await db.select().from(changeOrders).where(eq(changeOrders.id, draft.id)))[0].paypalInvoiceId).toBe("INV2-DZQM-QREH-7LAT-F7YR");
   });
 
-  it("발송이 성공하면 refresh를 한 번 부르고, 실패하면 부르지 않는다", async () => {
+  it("발송이 성공하면 refresh를 한 번 부르고, 발송·취소가 실패하면 부르지 않는다", async () => {
     signIn(me);
     const draft = await draftOf(mine);
 
@@ -303,12 +303,17 @@ describe("서버 액션: 발송", () => {
     await sendChangeOrder(null, form({ changeOrderId: draft.id }));
     expect(refresh).toHaveBeenCalledTimes(1);
     vi.mocked(refresh).mockClear();
-    request.paypal = { ...healthyPayPal(), create: async () => Promise.reject(new PayPalError("unavailable", 503, null, null)) };
+    request.paypal = {
+      ...healthyPayPal(),
+      create: async () => Promise.reject(new PayPalError("unavailable", 503, null, null)),
+      cancel: async () => Promise.reject(new PayPalError("unavailable", 503, null, null)),
+    };
     vi.spyOn(console, "error").mockImplementation(() => {});
+    const failedCancel = await cancelChangeOrder(null, form({ changeOrderId: draft.id }));
     signIn(someoneElse);
-    const failed = await sendChangeOrder(null, form({ changeOrderId: theirDraft.id }));
+    const failedSend = await sendChangeOrder(null, form({ changeOrderId: theirDraft.id }));
 
-    expect(failed).toEqual({ ok: false, error: "paypal_unavailable" });
+    expect([failedCancel, failedSend]).toEqual(Array(2).fill({ ok: false, error: "paypal_unavailable" }));
     expect(refresh).not.toHaveBeenCalled();
   });
 
@@ -382,5 +387,70 @@ describe("서버 액션: 발송", () => {
 
     expect(result).toEqual({ ok: false, error: "paypal_rejected" });
     expect(JSON.stringify(result)).not.toMatch(/CANNOT_SEND|f5a1c27e3b9d4|INV2/);
+  });
+
+  it("취소 액션은 폼의 changeOrderId만 읽는다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+    vi.mocked(refresh).mockClear();
+
+    const result = await cancelChangeOrder(null, form({ changeOrderId: draft.id, invoiceId: "INV2-AAAA-BBBB-CCCC-DDDD", status: "paid" }));
+
+    expect(result).toEqual({ ok: true });
+    expect(calls.cancel).toEqual(["INV2-DZQM-QREH-7LAT-F7YR"]);
+    expect(await statusOf(draft.id)).toBe("cancelled");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("쿠키가 없으면 취소·다시 견적 모두 not_found다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+    request.cookies.clear();
+
+    const results = [await cancelChangeOrder(null, form({ changeOrderId: draft.id })), await requoteChangeOrder(null, form({ changeOrderId: draft.id }))];
+
+    expect(results).toEqual([
+      { ok: false, error: "not_found" },
+      { ok: false, error: "not_found" },
+    ]);
+    expect(calls.cancel).toEqual([]);
+    expect(await statusOf(draft.id)).toBe("sent");
+  });
+
+  it("취소·다시 견적도 UUID가 아닌 id는 invalid_input이다", async () => {
+    signIn(me);
+
+    const results = [await cancelChangeOrder(null, form({ changeOrderId: "x" })), await requoteChangeOrder(null, form({}))];
+
+    expect(results).toEqual(Array(2).fill({ ok: false, error: "invalid_input" }));
+  });
+
+  it("다시 견적 액션은 취소된 견적의 항목에 새 draft를 만들고 refresh를 부른다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+    await cancelChangeOrder(null, form({ changeOrderId: draft.id }));
+    vi.mocked(refresh).mockClear();
+
+    const result = await requoteChangeOrder(null, form({ changeOrderId: draft.id, amountCents: "1" }));
+
+    const fresh = await draftOf(mine);
+    expect(result).toEqual({ ok: true });
+    expect(fresh.id).not.toBe(draft.id);
+    expect([fresh.findingId, fresh.amountCents]).toEqual([draft.findingId, 65000]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("다시 견적 중 DB에 닿지 못하면 server_error다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    db.$client.close();
+
+    const result = await requoteChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "server_error" });
   });
 });
