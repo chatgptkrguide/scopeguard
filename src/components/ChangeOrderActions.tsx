@@ -28,6 +28,7 @@ const errorText: Record<ActionError | PayPalActionError, string> = {
   not_configured: "PayPal isn't set up on this server, so nothing was sent.",
   invoice_exists: "PayPal already has an invoice for this, so it can't be included at no charge. Send it again; you can cancel it afterwards.",
   paypal_unconfirmed: "PayPal may have sent it, but this page couldn't confirm it. Press Send again to check; the client won't get a second invoice.",
+  invoice_void: "PayPal can't use this invoice any more, so it's marked cancelled here. Quote it again to send a new one.",
 };
 
 const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {
@@ -77,6 +78,10 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
   useFocusOnSuccess(sendState, statusLineId);
   useFocusOnSuccess(cancelState, statusLineId);
   useFocusOnSuccess(requoteState, statusLineId);
+  // Sending found the invoice cancelled in PayPal: the note turned cancelled, so focus goes to its status line too.
+  useEffect(() => {
+    if (sendState?.ok === false && sendState.error === "invoice_void") document.getElementById(statusLineId)?.focus();
+  }, [sendState, statusLineId]);
   // Waiving was refused because PayPal has the invoice: the waive buttons are gone, so focus goes to "Send again".
   useEffect(() => {
     if (waiveState?.ok === false && waiveState.error === "invoice_exists") sendRef.current?.focus();
@@ -185,7 +190,8 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
           </p>
         )}
         {reason}
-        {errorFor(sendState)}
+        {/* invoice_void belongs to the order that became cancelled, never to a draft quoted again after it. */}
+        {sendState?.ok === false && sendState.error !== "invoice_void" && errorFor(sendState)}
         {errorFor(waiveState)}
       </div>
     );
@@ -266,6 +272,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
             {requoting ? "Quoting…" : "Quote again"}
           </button>
         </form>
+        {sendState?.ok === false && sendState.error === "invoice_void" && errorFor(sendState)}
         {errorFor(requoteState)}
       </div>
     );

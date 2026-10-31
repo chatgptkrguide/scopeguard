@@ -13,6 +13,10 @@ const INVOICES = "/v2/invoicing/invoices";
 const SEARCH = "/v2/invoicing/search-invoices";
 const INVOICE_ID = /^INV2(-[A-Z0-9]{4}){4}$/; // every id the sandbox returned has this shape
 const MAX_ITEM_NAME = 200;
+
+// Not a PayPal name: createInvoice's own issue for a number that is taken by an invoice nobody can pay (cancelled
+// in PayPal, or a draft that doesn't match this order). That number can never carry this order's invoice.
+export const INVOICE_NUMBER_USED_UP = "INVOICE_NUMBER_USED_UP";
 const MAX_NOTE = 4000;
 
 // The client is notified by PayPal (PM decision [2]); the freelancer isn't sent a copy.
@@ -126,7 +130,8 @@ async function search(client: PayPalClient, criteria: Readonly<Record<string, st
 // the invoice number is what stops a second invoice. When PayPal says the number exists, the invoice made by an
 // earlier try is looked up and reused, but only if it belongs to this change order, has the same amount, and
 // isn't cancelled. A search that finds nothing yet (PayPal's index can lag) counts as unavailable: the next
-// try finds it.
+// try finds it. A cancelled invoice, or a draft that doesn't match, uses the number up for good
+// (INVOICE_NUMBER_USED_UP, P2-D4); a payable one that doesn't match is refused as before and left alone.
 export async function createInvoice(client: PayPalClient, input: InvoiceInput): Promise<InvoiceRef & { created: boolean }> {
   const body = invoiceBody(input);
   const invoiceNumber = body.detail.invoice_number;
@@ -144,12 +149,12 @@ export async function createInvoice(client: PayPalClient, input: InvoiceInput): 
     if (res.issue !== "DUPLICATE_INVOICE_NUMBER") throw refused(res);
     const existing = await findByInvoiceNumber(client, invoiceNumber);
     if (!existing) throw new PayPalError("unavailable", 422, "DUPLICATE_INVOICE_NUMBER", res.debugId);
-    const sameOrder =
-      existing.reference === input.changeOrderId &&
-      existing.amountValue === toPayPalValue(input.amountCents) &&
-      existing.status !== "CANCELLED";
-    if (!sameOrder) throw refused(res);
-    return { id: existing.id, invoiceNumber, created: false };
+    const sameOrder = existing.reference === input.changeOrderId && existing.amountValue === toPayPalValue(input.amountCents);
+    if (sameOrder && existing.status !== "CANCELLED") return { id: existing.id, invoiceNumber, created: false };
+    if (existing.status === "CANCELLED" || existing.status === "DRAFT") {
+      throw new PayPalError("rejected", 422, INVOICE_NUMBER_USED_UP, res.debugId);
+    }
+    throw refused(res);
   }
 
   // Prefer: return=representation answers with the whole invoice; without it, only a self link comes back.

@@ -34,6 +34,7 @@ import {
   getInvoice,
   invoiceBody,
   invoicesForReference,
+  INVOICE_NUMBER_USED_UP,
   sendInvoice,
   type InvoiceInput,
 } from "./invoices";
@@ -157,9 +158,9 @@ describe("청구서 작성", () => {
     expect(pp.to(CREATE)).toHaveLength(1);
   });
 
-  it("번호로 찾은 청구서의 reference나 금액이 다르면 rejected 오류를 낸다", async () => {
-    const otherReference = { ...createdDraft, detail: { ...createdDraft.detail, reference: "11111111-1111-4111-8111-111111111111" } };
-    const otherAmount = { ...createdDraft, amount: { currency_code: "USD", value: "600.00" } };
+  it("번호로 찾은 청구서가 결제할 수 있는 상태(SENT)인데 reference나 금액이 다르면 그대로 두고 rejected 오류를 낸다", async () => {
+    const otherReference = { ...sentInvoice, detail: { ...sentInvoice.detail, reference: "11111111-1111-4111-8111-111111111111" } };
+    const otherAmount = { ...sentInvoice, amount: { currency_code: "USD", value: "600.00" } };
     const byReference = paypal({ [CREATE]: { status: 422, body: duplicateInvoiceNumber }, [SEARCH]: { status: 200, body: searchResult(otherReference) } });
     const byAmount = paypal({ [CREATE]: { status: 422, body: duplicateInvoiceNumber }, [SEARCH]: { status: 200, body: searchResult(otherAmount) } });
 
@@ -171,12 +172,27 @@ describe("청구서 작성", () => {
     ]);
   });
 
-  it("번호로 찾은 청구서가 CANCELLED면 rejected 오류를 낸다", async () => {
+  it("번호로 찾은 청구서가 DRAFT인데 reference나 금액이 다르면 번호를 다 쓴 것으로 보고 INVOICE_NUMBER_USED_UP(rejected)을 낸다", async () => {
+    const otherReference = { ...createdDraft, detail: { ...createdDraft.detail, reference: "11111111-1111-4111-8111-111111111111" } };
+    const otherAmount = { ...createdDraft, amount: { currency_code: "USD", value: "600.00" } };
+    const byReference = paypal({ [CREATE]: { status: 422, body: duplicateInvoiceNumber }, [SEARCH]: { status: 200, body: searchResult(otherReference) } });
+    const byAmount = paypal({ [CREATE]: { status: 422, body: duplicateInvoiceNumber }, [SEARCH]: { status: 200, body: searchResult(otherAmount) } });
+
+    const errors = [await failureOf(createInvoice(byReference.client, input)), await failureOf(createInvoice(byAmount.client, input))];
+
+    expect(errors.map((e) => [e.failure, e.httpStatus, e.issue])).toEqual([
+      ["rejected", 422, INVOICE_NUMBER_USED_UP],
+      ["rejected", 422, INVOICE_NUMBER_USED_UP],
+    ]);
+  });
+
+  it("번호로 찾은 청구서가 CANCELLED면(같은 견적이어도) 다시 쓰지 않고 INVOICE_NUMBER_USED_UP(rejected)을 낸다", async () => {
     const pp = paypal({ [CREATE]: { status: 422, body: duplicateInvoiceNumber }, [SEARCH]: { status: 200, body: searchResult(cancelledInvoice) } });
 
     const error = await failureOf(createInvoice(pp.client, input));
 
-    expect([error.failure, error.issue]).toEqual(["rejected", "DUPLICATE_INVOICE_NUMBER"]);
+    expect([error.failure, error.issue]).toEqual(["rejected", INVOICE_NUMBER_USED_UP]);
+    expect(pp.to(CREATE)).toHaveLength(1);
   });
 
   it("번호 검색이 0건이면 unavailable 오류를 낸다", async () => {

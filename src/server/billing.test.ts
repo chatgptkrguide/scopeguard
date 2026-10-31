@@ -21,6 +21,7 @@ import { PayPalError } from "./paypal/errors";
 import {
   INVOICE_ID,
   PAYER_VIEW_URL,
+  cancelledInvoice,
   createdDraft,
   duplicateInvoiceNumber,
   fakeFetch,
@@ -327,15 +328,16 @@ describe("견적 발송·취소·다시 견적", () => {
       expect((await listActivity(db, mine)).at(-1)?.detail).toMatchObject({ alreadySent: true });
     });
 
-    it("조회한 PayPal 상태가 CANCELLED면 sent로 저장하지 않는다", async () => {
+    it("발송 뒤 조회한 PayPal 상태가 CANCELLED면 sent로 저장하지 않고 cancelled로 표시해 invoice_void다(다시 견적 가능, P2-D4)", async () => {
       const draft = await orderOf(mine, "draft");
       const paypal = fakeGateway({ get: async (id) => ({ ...sentView(id, draft.id), status: "CANCELLED" }) });
 
       const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
 
-      expect(result).toEqual({ ok: false, error: "paypal_rejected" });
-      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null, sentAt: null });
-      expect(await kinds(mine)).toEqual(["invoice_created", "paypal_failed"]);
+      expect(result).toEqual({ ok: false, error: "invoice_void" });
+      expect(await row(draft.id)).toMatchObject({ status: "cancelled", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null, sentAt: null });
+      expect(await kinds(mine)).toEqual(["invoice_created", "invoice_cancelled"]);
+      expect((await listActivity(db, mine)).at(-1)?.detail).toEqual({ invoiceId: INVOICE_ID, paypalStatus: "CANCELLED", voided: true });
     });
 
     it("결제 링크가 sandbox.paypal.com이 아니면 링크 없이 sent로 저장된다", async () => {
@@ -445,6 +447,82 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(result).toEqual({ ok: false, error: "paypal_rejected" });
       expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sentAt: null });
+    });
+  });
+
+  describe("PayPal에서 취소됐거나 번호가 막힌 청구서 (P2-D4)", () => {
+    const duplicateOf = (existing: object) => ({
+      "POST /v2/invoicing/invoices": { status: 422, body: duplicateInvoiceNumber },
+      "POST /v2/invoicing/search-invoices": { status: 200, body: searchResult(existing) },
+    });
+    const forDraft = <T extends typeof createdDraft>(invoice: T, draftId: string) => ({
+      ...invoice,
+      detail: { ...invoice.detail, reference: draftId, invoice_number: invoiceNumberFor(draftId) },
+    });
+
+    it("중복 번호인데 PayPal의 그 청구서가 CANCELLED면 견적을 cancelled로 표시하고 invoice_void이며, 다시 견적하면 새 번호로 발송된다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const pp = realGateway(duplicateOf(forDraft(cancelledInvoice, draft.id)));
+
+      const result = await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
+      const requoted = await requoteOwnedChangeOrder(db, mine, draft.id);
+      const fresh = await orderOf(mine, "draft");
+      const resent = await sendOwnedChangeOrder(deps(fakeGateway().gateway), mine, fresh.id);
+
+      expect(result).toEqual({ ok: false, error: "invoice_void" });
+      expect(await row(draft.id)).toMatchObject({ status: "cancelled", paypalInvoiceId: null, sendClaimedAt: null });
+      expect(pp.to(`POST /v2/invoicing/invoices/${INVOICE_ID}/send`)).toHaveLength(0);
+      expect(requoted).toEqual({ ok: true });
+      expect(invoiceNumberFor(fresh.id)).not.toBe(invoiceNumberFor(draft.id));
+      expect(resent).toEqual({ ok: true });
+    });
+
+    it("중복 번호인데 PayPal의 그 청구서가 금액이 다른 DRAFT면(아무도 결제할 수 없음) cancelled로 표시하고 invoice_void다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const pp = realGateway(duplicateOf({ ...forDraft(createdDraft, draft.id), amount: { currency_code: "USD", value: "600.00" } }));
+
+      const result = await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "invoice_void" });
+      expect((await row(draft.id)).status).toBe("cancelled");
+      expect((await listActivity(db, mine)).at(-1)).toMatchObject({ kind: "invoice_cancelled", detail: { invoiceId: null, voided: true } });
+    });
+
+    it("중복 번호인데 PayPal의 그 청구서가 결제할 수 있는 상태(SENT)이고 금액이 다르면 건드리지 않고 paypal_rejected이며 draft 그대로다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const pp = realGateway(duplicateOf({ ...forDraft(sentInvoice, draft.id), amount: { currency_code: "USD", value: "600.00" } }));
+
+      const result = await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_rejected" });
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: null, sendClaimedAt: null });
+    });
+
+    it("청구서 id가 있는 초안을 다시 보낼 때 PayPal이 발송을 거부하고 조회 상태가 CANCELLED면 cancelled로 표시하고 invoice_void다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await db.update(changeOrders).set({ paypalInvoiceId: INVOICE_ID }).where(eq(changeOrders.id, draft.id));
+      const paypal = fakeGateway({
+        send: async () => Promise.reject(new PayPalError("rejected", 422, "CANNOT_SEND_INVOICE", null)),
+        get: async (id) => ({ ...sentView(id, draft.id), status: "CANCELLED" }),
+      });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "invoice_void" });
+      expect(await row(draft.id)).toMatchObject({ status: "cancelled", sendClaimedAt: null });
+      expect(paypal.calls.create).toHaveLength(0);
+    });
+
+    it("발송이 거부됐는데 조회 상태가 CANCELLED가 아니면(또는 조회도 실패하면) paypal_rejected이고 draft 그대로다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const refuse = async () => Promise.reject(new PayPalError("rejected", 422, "CANNOT_SEND_INVOICE", null));
+      const unpaid = fakeGateway({ send: refuse, get: async (id) => ({ ...sentView(id, draft.id), status: "UNPAID" }) });
+      const unreadable = fakeGateway({ send: refuse, get: async () => Promise.reject(new PayPalError("unavailable", null, null, null)) });
+
+      const results = [await sendOwnedChangeOrder(deps(unpaid.gateway), mine, draft.id), await sendOwnedChangeOrder(deps(unreadable.gateway), mine, draft.id)];
+
+      expect(results).toEqual(Array(2).fill({ ok: false, error: "paypal_rejected" }));
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
     });
   });
 

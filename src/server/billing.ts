@@ -9,6 +9,7 @@ import {
   claimSend,
   markCancelled,
   markSent,
+  markVoided,
   ownedStatus,
   readBillingOrder,
   releaseSendClaim,
@@ -20,7 +21,16 @@ import { getDb, type Db } from "./db/client";
 import { isUniqueViolation } from "./db/errors";
 import { changeOrders } from "./db/schema";
 import { PayPalError } from "./paypal/errors";
-import { cancelInvoice, createInvoice, getInvoice, sendInvoice, type InvoiceInput, type InvoiceRef, type InvoiceView } from "./paypal/invoices";
+import {
+  cancelInvoice,
+  createInvoice,
+  getInvoice,
+  INVOICE_NUMBER_USED_UP,
+  sendInvoice,
+  type InvoiceInput,
+  type InvoiceRef,
+  type InvoiceView,
+} from "./paypal/invoices";
 import { getPayPal, type PayPalClient } from "./paypal/token";
 
 // Sending, cancelling and quoting again: the database and PayPal together. Every database write is one
@@ -152,13 +162,54 @@ async function releaseQuietly(db: Db, ownerProjectId: string, changeOrderId: str
   }
 }
 
+interface VoidRecord {
+  invoiceId: string | null; // null when the number is taken by an invoice this order never saved
+  paypalStatus: string | null;
+  summary: string;
+}
+
+// The order's invoice can never go out: PayPal shows it cancelled, or its number is used up (P2-D4). The draft
+// becomes cancelled, so "Quote again" gives the finding a new order and a new number; nobody can pay the old
+// invoice, so nothing is left untracked. Runs while this request holds the claim, and clears it.
+async function voidDraft(deps: BillingDeps, ownerProjectId: string, changeOrderId: string, claim: string, record: VoidRecord): Promise<BillingActionResult> {
+  const { db, now } = deps;
+  const [voided] = await db.batch([
+    markVoided(db, ownerProjectId, changeOrderId, claim),
+    activityInsertAfterChange(db, {
+      projectId: ownerProjectId,
+      changeOrderId,
+      kind: "invoice_cancelled",
+      actor: "paypal",
+      summary: record.summary,
+      detail: { invoiceId: record.invoiceId, paypalStatus: record.paypalStatus, voided: true },
+      at: now().toISOString(),
+    }),
+  ]);
+  if (voided.rowsAffected > 0) return fail("invoice_void");
+  // This request outlived its claim and another one took over.
+  const status = await ownedStatus(db, ownerProjectId, changeOrderId);
+  if (status === "cancelled") return fail("invoice_void");
+  if (status === "draft") return fail("in_progress");
+  return status === "sent" ? OK : fail(status === null ? "not_found" : "invalid_state");
+}
+
+// PayPal's status for the invoice, or null if it can't be read just now.
+async function statusIfReadable(paypal: InvoiceGateway, invoiceId: string): Promise<string | null> {
+  try {
+    return (await paypal.get(invoiceId)).status;
+  } catch {
+    return null;
+  }
+}
+
 // draft → sent. Order of work: check the owner and status, claim the send (one conditional UPDATE), create the
 // invoice unless the order already has one, save its id before sending, send, read it back, then save sent and
 // the payer link. A request that loses the claim stops before PayPal. If PayPal already has an invoice with this
 // order's number (an earlier try created it but never saved the id), createInvoice finds and reuses it.
 // Every way out gives the claim back, a database error included, so a retry isn't held off for two minutes. Once
 // PayPal was asked to send, a failure answers paypal_unconfirmed, never "nothing changed": the client may have the
-// invoice, and Send again settles it either way (P2-D2).
+// invoice, and Send again settles it either way (P2-D2). An invoice PayPal shows as cancelled, or a number that is
+// used up, makes the draft cancelled so it can be quoted again (P2-D4).
 export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
   const { db, paypal, now } = deps;
   if (!paypal) return fail("not_configured");
@@ -191,7 +242,17 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     }
     let invoiceId = current.paypalInvoiceId;
     if (!invoiceId) {
-      const created = await paypal.create(invoiceInputFor(current));
+      let created: InvoiceRef & { created: boolean };
+      try {
+        created = await paypal.create(invoiceInputFor(current));
+      } catch (error) {
+        if (!(error instanceof PayPalError) || error.issue !== INVOICE_NUMBER_USED_UP) throw error;
+        return await voidDraft(deps, ownerProjectId, changeOrderId, claim, {
+          invoiceId: null,
+          paypalStatus: null,
+          summary: `PayPal already has invoice ${invoiceNumber}, cancelled there or not matching this change order, so it was marked cancelled; quote it again for a new invoice`,
+        });
+      }
       const [saved] = await db.batch([
         saveInvoiceId(db, ownerProjectId, changeOrderId, created.id, claim),
         activityInsertAfterChange(db, {
@@ -222,14 +283,32 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
       invoiceId = created.id;
     }
 
+    const cancelledInPayPal = (paypalStatus: string) =>
+      voidDraft(deps, ownerProjectId, changeOrderId, claim, {
+        invoiceId,
+        paypalStatus,
+        summary: `PayPal shows invoice ${invoiceNumber} as cancelled, so this change order was marked cancelled; quote it again for a new invoice`,
+      });
+
     step = "send";
     sendAsked = true;
-    const sendResult = await paypal.send(invoiceId);
+    let sendResult: "sent" | "already_sent";
+    try {
+      sendResult = await paypal.send(invoiceId);
+    } catch (error) {
+      // PayPal won't send an invoice someone cancelled there. Read it back to tell that apart from other refusals.
+      if (error instanceof PayPalError && error.failure === "rejected" && (await statusIfReadable(paypal, invoiceId)) === "CANCELLED") {
+        return await cancelledInPayPal("CANCELLED");
+      }
+      throw error;
+    }
     step = "read";
     const invoice = await paypal.get(invoiceId);
 
-    // Someone cancelled it in PayPal (PM decision [6]), or PayPal doesn't show it as out yet: don't call it sent.
-    // PayPal accepted the send, though, so the answer can't be that nothing changed.
+    // Someone cancelled it in PayPal: the draft becomes cancelled (PM decision [6], extended by P2-D4).
+    if (invoice.status === "CANCELLED") return await cancelledInPayPal(invoice.status);
+    // PayPal doesn't show it as out yet: don't call it sent. PayPal accepted the send, though, so the answer
+    // can't be that nothing changed.
     if (!SENT_LIKE.has(invoice.status)) {
       await release();
       await recordFailure(deps, {
@@ -239,7 +318,7 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
         summary: `PayPal accepted the send but shows the invoice as ${invoice.status}, so it isn't marked sent yet.`,
         detail: { httpStatus: 200, issue: invoice.status, debugId: null },
       });
-      return fail(invoice.status === "CANCELLED" ? "paypal_rejected" : "paypal_unconfirmed");
+      return fail("paypal_unconfirmed");
     }
 
     const sentAt = now().toISOString();

@@ -56,7 +56,8 @@ export async function resetDemo(_prev: ActionResult | null, formData: FormData):
 
 // Sends the change order as a PayPal invoice. The form carries only the id: amount, client and invoice come
 // from the database. PayPal failures come back as codes; their details stay in the server log and activity.
-// paypal_unconfirmed refreshes the page too: the draft now has an invoice, so the note offers Send again.
+// paypal_unconfirmed and invoice_void refresh the page too: the draft now has an invoice, so the note offers Send
+// again, or it was marked cancelled, so the note offers Quote again.
 export async function sendChangeOrder(_prev: BillingActionResult | null, formData: FormData): Promise<BillingActionResult> {
   const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
   if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
@@ -71,7 +72,7 @@ export async function sendChangeOrder(_prev: BillingActionResult | null, formDat
     console.error("sending a change order failed", error);
     return { ok: false, error: "server_error" };
   }
-  if (result.ok || result.error === "paypal_unconfirmed") refresh();
+  if (result.ok || result.error === "paypal_unconfirmed" || result.error === "invoice_void") refresh();
   return result;
 }
 

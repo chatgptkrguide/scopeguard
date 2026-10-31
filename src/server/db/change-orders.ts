@@ -158,6 +158,15 @@ export function markSent(db: Db, ownerProjectId: string, changeOrderId: string, 
     .where(and(owned(ownerProjectId, changeOrderId), eq(changeOrders.status, "draft"), eq(changeOrders.paypalInvoiceId, invoiceId)));
 }
 
+// draft → cancelled, while this request holds the claim: PayPal shows the order's invoice as cancelled, or its
+// number is used up (P2-D4). Clears the claim.
+export function markVoided(db: Db, ownerProjectId: string, changeOrderId: string, claim: string) {
+  return db
+    .update(changeOrders)
+    .set({ status: "cancelled", sendClaimedAt: null })
+    .where(and(owned(ownerProjectId, changeOrderId), eq(changeOrders.status, "draft"), eq(changeOrders.sendClaimedAt, claim)));
+}
+
 // sent → cancelled, after PayPal cancelled the invoice.
 export function markCancelled(db: Db, ownerProjectId: string, changeOrderId: string) {
   return db

@@ -342,6 +342,18 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
     expect(await statusOf(draft.id)).toBe("draft");
   });
 
+  it("발송하다 PayPal에서 취소된 청구서를 만나면(invoice_void) 화면이 Quote again으로 바뀌도록 refresh를 부른다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    request.paypal = { ...healthyPayPal(), get: async (id) => ({ id, status: "CANCELLED", invoiceNumber: null, reference: null, amountValue: "650.00", payerViewUrl: null }) };
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "invoice_void" });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await statusOf(draft.id)).toBe("cancelled");
+  });
+
   it("쿠키가 없으면 발송은 not_found이고 PayPal을 부르지 않는다", async () => {
     const draft = await draftOf(mine);
 

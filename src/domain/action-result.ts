@@ -12,6 +12,8 @@ export type ActionResult = { ok: true } | { ok: false; error: ActionError };
 // invoice_exists: PayPal already has an invoice for this draft, so it can't be waived; sending again settles it
 // paypal_unconfirmed: PayPal took the request (it may have sent or cancelled the invoice) but that couldn't be
 // confirmed or saved here; pressing again checks and settles it
+// invoice_void: PayPal can't use this order's invoice any more (cancelled there), so the order is now cancelled
+// and can be quoted again
 export const PAYPAL_ACTION_ERRORS = [
   "in_progress",
   "paypal_unavailable",
@@ -20,6 +22,7 @@ export const PAYPAL_ACTION_ERRORS = [
   "not_configured",
   "invoice_exists",
   "paypal_unconfirmed",
+  "invoice_void",
 ] as const;
 export type PayPalActionError = (typeof PAYPAL_ACTION_ERRORS)[number];
 export type BillingActionResult = { ok: true } | { ok: false; error: ActionError | PayPalActionError };

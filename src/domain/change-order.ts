@@ -1,8 +1,11 @@
 import type { ChangeOrder, ChangeOrderStatus } from "./types";
 
 // The only allowed moves. Anything else is a bug or a replayed request.
+// draft → cancelled happens only when PayPal already shows the order's invoice as cancelled, or its number is used
+// up by an invoice nobody can pay; the app never cancels a draft by itself (P2-D4). It lets the finding be quoted
+// again under a new number.
 const TRANSITIONS = {
-  draft: ["sent", "waived"],
+  draft: ["sent", "waived", "cancelled"],
   sent: ["paid", "cancelled"],
   paid: [],
   waived: [],

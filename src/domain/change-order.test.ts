@@ -35,6 +35,11 @@ describe("추가 견적 상태 변화", () => {
     expect(transition(sent, "cancelled").status).toBe("cancelled");
   });
 
+  it("초안은 cancelled가 될 수 있다(PayPal에서 그 청구서가 이미 취소됐을 때만 쓴다)", () => {
+    expect(canTransition("draft", "cancelled")).toBe(true);
+    expect(transition(draft, "cancelled").status).toBe("cancelled");
+  });
+
   it("그 밖의 변화와 같은 상태 반복은 거부한다", () => {
     expect(canTransition("draft", "paid")).toBe(false);
     expect(canTransition("paid", "paid")).toBe(false);
