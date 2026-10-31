@@ -16,21 +16,23 @@ import { currentProjectId } from "@/server/session";
 const changeOrderIdSchema = z.uuid();
 const demoProjectIdSchema = z.string().regex(/^v_[A-Za-z0-9_-]{22}$/);
 
-export async function waiveChangeOrder(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+// A draft that already has a PayPal invoice is refused (invoice_exists); the page is refreshed then too, so the
+// note shows "Send again" in place of the stale waive button.
+export async function waiveChangeOrder(_prev: BillingActionResult | null, formData: FormData): Promise<BillingActionResult> {
   const changeOrderId = changeOrderIdSchema.safeParse(formData.get("changeOrderId"));
   if (!changeOrderId.success) return { ok: false, error: "invalid_input" };
 
   const ownerProjectId = await currentProjectId();
   if (!ownerProjectId) return { ok: false, error: "not_found" };
 
-  let result: ActionResult;
+  let result: BillingActionResult;
   try {
     result = await waiveOwnedChangeOrder(getDb(), ownerProjectId, changeOrderId.data);
   } catch (error) {
     console.error("waiving a change order failed", error);
     return { ok: false, error: "server_error" };
   }
-  if (result.ok) refresh();
+  if (result.ok || result.error === "invoice_exists") refresh();
   return result;
 }
 

@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
-import { waiveOwnedChangeOrder } from "./change-orders";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SEND_CLAIM_TTL_MS, waiveOwnedChangeOrder } from "./change-orders";
 import { createDb, type Db } from "./client";
 import { ensureDemoCopy } from "./demo";
 import { runMigrations } from "./migrate";
@@ -100,5 +100,76 @@ describe("견적 무료 처리(소유 확인)", () => {
     expect(results).toEqual([{ ok: true }, { ok: true }]);
     expect(await statusOf(draft.id)).toBe("waived");
     expect((await totalChanges()) - before).toBe(1);
+  });
+
+  describe("PayPal 청구서가 있거나 발송 중인 초안 (P2-D1)", () => {
+    const INVOICE = "INV2-V26G-W6TK-FWP3-5XKU";
+    const setDraft = async (id: string, values: { paypalInvoiceId?: string; sendClaimedAt?: string }) =>
+      db.update(changeOrders).set(values).where(eq(changeOrders.id, id));
+    // The first read sees the order as it was a moment ago; the database has moved on since (another request wrote).
+    const staleFirstRead = (row: { status: "draft"; paypalInvoiceId: null; sendClaimedAt: null }) =>
+      vi.spyOn(db, "select").mockImplementationOnce((() => ({ from: () => ({ where: async () => [row] }) })) as unknown as Db["select"]);
+    const cleanDraft = { status: "draft", paypalInvoiceId: null, sendClaimedAt: null } as const;
+
+    it("청구서 id가 있는 초안은 무료 처리할 수 없고 invoice_exists이며 draft 그대로다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { paypalInvoiceId: INVOICE });
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: false, error: "invoice_exists" });
+      expect(await statusOf(draft.id)).toBe("draft");
+    });
+
+    it("발송 표시가 2분 안인 초안은 무료 처리할 수 없고 in_progress다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { sendClaimedAt: new Date(NOW.getTime() - SEND_CLAIM_TTL_MS + 1000).toISOString() });
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: false, error: "in_progress" });
+      expect(await statusOf(draft.id)).toBe("draft");
+    });
+
+    it("발송 표시가 2분 넘게 남은 초안(멈춘 요청, 청구서 id 없음)은 무료 처리할 수 있다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { sendClaimedAt: new Date(NOW.getTime() - SEND_CLAIM_TTL_MS - 1000).toISOString() });
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: true });
+      expect(await statusOf(draft.id)).toBe("waived");
+    });
+
+    it("발송 표시가 만료돼도 청구서 id가 있으면 무료 처리할 수 없다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { paypalInvoiceId: INVOICE, sendClaimedAt: new Date(NOW.getTime() - SEND_CLAIM_TTL_MS - 1000).toISOString() });
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: false, error: "invoice_exists" });
+    });
+
+    it("경합: 읽은 뒤 발송이 청구서 id를 저장했으면 조건부 UPDATE가 막아 waived가 되지 않고 invoice_exists다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { paypalInvoiceId: INVOICE });
+      staleFirstRead(cleanDraft);
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: false, error: "invoice_exists" });
+      expect(await statusOf(draft.id)).toBe("draft");
+    });
+
+    it("경합: 읽은 뒤 발송이 시작됐으면(발송 표시) 조건부 UPDATE가 막아 waived가 되지 않고 in_progress다", async () => {
+      const draft = await orderOf(mine, "draft");
+      await setDraft(draft.id, { sendClaimedAt: NOW.toISOString() });
+      staleFirstRead(cleanDraft);
+
+      const result = await waiveOwnedChangeOrder(db, mine, draft.id, NOW);
+
+      expect(result).toEqual({ ok: false, error: "in_progress" });
+      expect(await statusOf(draft.id)).toBe("draft");
+    });
   });
 });

@@ -13,6 +13,7 @@ import {
   readBillingOrder,
   releaseSendClaim,
   saveInvoiceId,
+  SEND_CLAIM_TTL_MS,
   type BillingOrder,
 } from "./db/change-orders";
 import { getDb, type Db } from "./db/client";
@@ -55,9 +56,7 @@ export function liveBillingDeps(): BillingDeps {
   return { db: getDb(), paypal: client && invoiceGateway(client), now: () => new Date() };
 }
 
-// A send claim older than this is abandoned (the request died), and the next send takes it over. Longer than
-// the slowest send: five PayPal calls of at most 10 s each, plus one 401 retry.
-export const SEND_CLAIM_TTL_MS = 2 * 60 * 1000;
+export { SEND_CLAIM_TTL_MS };
 
 type PayPalStep = "create" | "send" | "read" | "cancel";
 

@@ -94,6 +94,18 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
     expect((await draftOf(mine)).status).toBe("draft");
   });
 
+  it("PayPal 청구서 id가 있는 초안을 무료 처리하면 invoice_exists이고, 화면이 Send again으로 바뀌도록 refresh를 부른다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await db.update(changeOrders).set({ paypalInvoiceId: "INV2-DZQM-QREH-7LAT-F7YR" }).where(eq(changeOrders.id, draft.id));
+
+    const result = await waiveChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "invoice_exists" });
+    expect((await draftOf(mine)).id).toBe(draft.id);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("폼에 amountCents·status를 함께 보내도 무시하고 상태만 waived가 된다", async () => {
     signIn(me);
     const draft = await draftOf(mine);

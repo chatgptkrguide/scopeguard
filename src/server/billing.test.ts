@@ -11,6 +11,7 @@ import {
   type InvoiceGateway,
 } from "./billing";
 import { listActivity } from "./db/activity";
+import { waiveOwnedChangeOrder } from "./db/change-orders";
 import { createDb, type Db } from "./db/client";
 import { ensureDemoCopy } from "./db/demo";
 import { runMigrations } from "./db/migrate";
@@ -443,6 +444,46 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(result).toEqual({ ok: false, error: "paypal_rejected" });
       expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sentAt: null });
+    });
+  });
+
+  describe("청구서가 생긴 초안의 무료 처리 (P2-D1)", () => {
+    it("발송은 됐는데 조회가 실패한 초안은 무료 처리할 수 없고(invoice_exists) 다시 발송하면 같은 청구서로 sent가 된다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const flaky = fakeGateway({ get: async () => Promise.reject(new PayPalError("unavailable", null, null, null)) });
+      await sendOwnedChangeOrder(deps(flaky.gateway), mine, draft.id);
+      expect(flaky.calls.send).toEqual([INVOICE_ID]); // PayPal has sent it; the client has the email
+
+      const waived = await waiveOwnedChangeOrder(db, mine, draft.id, clock.now());
+      const healthy = fakeGateway({ send: async () => "already_sent", get: async (id) => sentView(id, draft.id) });
+      const resent = await sendOwnedChangeOrder(deps(healthy.gateway), mine, draft.id);
+
+      expect(waived).toEqual({ ok: false, error: "invoice_exists" });
+      expect(resent).toEqual({ ok: true });
+      expect(healthy.calls.create).toHaveLength(0);
+      expect(healthy.calls.send).toEqual([INVOICE_ID]);
+      expect(await row(draft.id)).toMatchObject({ status: "sent", paypalInvoiceId: INVOICE_ID });
+    });
+
+    it("경합: PayPal 안에서 발송이 진행 중인 초안은 무료 처리가 in_progress로 막히고 발송이 끝나면 sent다", async () => {
+      const draft = await orderOf(mine, "draft");
+      let openGate!: () => void;
+      const gate = new Promise<void>((resolve) => (openGate = resolve));
+      const paypal = fakeGateway({
+        send: async () => {
+          await gate; // the invoice id is saved and PayPal is sending while the freelancer presses "include at no charge"
+          return "sent";
+        },
+      });
+
+      const sending = sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+      await vi.waitFor(() => expect(paypal.calls.send).toHaveLength(1));
+      const waived = await waiveOwnedChangeOrder(db, mine, draft.id, clock.now());
+      openGate();
+
+      expect(waived).toEqual({ ok: false, error: "in_progress" });
+      expect(await sending).toEqual({ ok: true });
+      expect((await row(draft.id)).status).toBe("sent");
     });
   });
 

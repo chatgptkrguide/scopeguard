@@ -1,5 +1,5 @@
 import { and, eq, isNull, lt, or } from "drizzle-orm";
-import type { ActionResult } from "../../domain/action-result";
+import type { BillingActionResult } from "../../domain/action-result";
 import { canTransition } from "../../domain/change-order";
 import type { ChangeOrderStatus } from "../../domain/types";
 import type { Db } from "./client";
@@ -17,23 +17,61 @@ export async function ownedStatus(db: Db, ownerProjectId: string, changeOrderId:
   return row?.status ?? null;
 }
 
-// draft → waived. Waiving twice is fine; anything already sent, paid or cancelled is refused.
-export async function waiveOwnedChangeOrder(db: Db, ownerProjectId: string, changeOrderId: string): Promise<ActionResult> {
-  const status = await ownedStatus(db, ownerProjectId, changeOrderId);
-  if (status === null) return { ok: false, error: "not_found" };
-  if (status === "waived") return { ok: true };
-  if (!canTransition(status, "waived")) return { ok: false, error: "invalid_state" };
+// A send claim older than this is abandoned (the request died), and the next send takes it over. Longer than
+// the slowest send: five PayPal calls of at most 10 s each, plus one 401 retry.
+export const SEND_CLAIM_TTL_MS = 2 * 60 * 1000;
 
-  // Only flips the status that was just read, so a concurrent change in between can't be overwritten.
+const staleClaimBefore = (now: Date) => new Date(now.getTime() - SEND_CLAIM_TTL_MS).toISOString();
+
+interface WaiveCheck {
+  status: ChangeOrderStatus;
+  paypalInvoiceId: string | null;
+  sendClaimedAt: string | null;
+}
+
+// Why an order can't be waived right now, or null if it can.
+function waiveRefusal(order: WaiveCheck, staleBefore: string): BillingActionResult | null {
+  if (order.status === "waived") return { ok: true };
+  if (!canTransition(order.status, "waived")) return { ok: false, error: "invalid_state" };
+  if (order.sendClaimedAt !== null && order.sendClaimedAt >= staleBefore) return { ok: false, error: "in_progress" };
+  if (order.paypalInvoiceId !== null) return { ok: false, error: "invoice_exists" };
+  return null;
+}
+
+// draft → waived. Waiving twice is fine; anything already sent, paid or cancelled is refused. So is a draft that
+// already has a PayPal invoice (P2-D1): an earlier send may have reached the client before it stopped, and a
+// waived order would leave that invoice payable with nothing tracking it, so it has to be sent again instead
+// (and cancelled afterwards if need be). A draft whose send is under way is refused too. Both checks sit in the
+// UPDATE itself, so a send that claims the order between the read and the write still wins.
+export async function waiveOwnedChangeOrder(db: Db, ownerProjectId: string, changeOrderId: string, now: Date = new Date()): Promise<BillingActionResult> {
+  const staleBefore = staleClaimBefore(now);
+  const read = () =>
+    db
+      .select({ status: changeOrders.status, paypalInvoiceId: changeOrders.paypalInvoiceId, sendClaimedAt: changeOrders.sendClaimedAt })
+      .from(changeOrders)
+      .where(owned(ownerProjectId, changeOrderId));
+
+  const [order] = await read();
+  if (!order) return { ok: false, error: "not_found" };
+  const refused = waiveRefusal(order, staleBefore);
+  if (refused) return refused;
+
   const { rowsAffected } = await db
     .update(changeOrders)
     .set({ status: "waived" })
-    .where(and(owned(ownerProjectId, changeOrderId), eq(changeOrders.status, status)));
+    .where(
+      and(
+        owned(ownerProjectId, changeOrderId),
+        eq(changeOrders.status, "draft"),
+        isNull(changeOrders.paypalInvoiceId),
+        or(isNull(changeOrders.sendClaimedAt), lt(changeOrders.sendClaimedAt, staleBefore)),
+      ),
+    );
   if (rowsAffected > 0) return { ok: true };
 
-  const now = await ownedStatus(db, ownerProjectId, changeOrderId);
-  if (now === "waived") return { ok: true };
-  return { ok: false, error: now === null ? "not_found" : "invalid_state" };
+  const [after] = await read();
+  if (!after) return { ok: false, error: "not_found" };
+  return waiveRefusal(after, staleBefore) ?? { ok: false, error: "invalid_state" };
 }
 
 // What sending, cancelling and quoting again need: the order and its project's client and rate,

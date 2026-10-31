@@ -222,7 +222,7 @@ function MarginNote({ quote, reason, order, sendBlockedReason }: MarginNoteProps
       {/* Rendered for every status (it draws nothing once paid or waived), so it stays mounted through the
           refresh after an action and can move focus to the status line. */}
       <ChangeOrderActions
-        order={{ id: order.id, status: order.status, payerViewUrl: order.payerViewUrl }}
+        order={{ id: order.id, status: order.status, payerViewUrl: order.payerViewUrl, hasInvoice: order.paypalInvoiceId !== null }}
         sendBlockedReason={sendBlockedReason}
         statusLineId={statusLineId(order)}
       />
