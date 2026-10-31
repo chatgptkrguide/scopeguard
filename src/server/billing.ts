@@ -1,11 +1,11 @@
 import "server-only";
-import type { ActivityDetail } from "@/domain/activity";
-import type { ActionResult, BillingActionResult, PayPalActionError } from "@/domain/action-result";
+import type { ActionResult, BillingActionResult } from "@/domain/action-result";
 import { canTransition } from "@/domain/change-order";
 import { invoiceNumberFor, SENT_LIKE } from "@/domain/invoice";
 import { paymentDecision } from "@/domain/payment";
 import { extraDaysForHours, formatUsd, priceForHours, toPayPalValue } from "@/domain/money";
-import { activityInsert, activityInsertAfterChange } from "./db/activity";
+import { actionErrorFor, errorDetail, failureSummary, recordFailure, type PayPalStep } from "./billing-errors";
+import { activityInsertAfterChange } from "./db/activity";
 import {
   claimSend,
   markCancelled,
@@ -71,44 +71,9 @@ export function liveBillingDeps(): BillingDeps {
 
 export { SEND_CLAIM_TTL_MS };
 
-export type PayPalStep = "create" | "send" | "read" | "cancel";
-
 type BillingError = Extract<BillingActionResult, { ok: false }>["error"];
 const OK: BillingActionResult = { ok: true };
 const fail = (error: BillingError): BillingActionResult => ({ ok: false, error });
-
-const stepText: Record<PayPalStep, string> = {
-  create: "creating the invoice",
-  send: "sending the invoice",
-  read: "reading the invoice back",
-  cancel: "cancelling the invoice",
-};
-
-// What a refusal at each step leaves behind. Once the invoice was sent, nothing may claim that nothing happened.
-const refusalMeans: Record<PayPalStep, string> = {
-  create: "no invoice was made",
-  send: "it wasn't sent",
-  read: "it was sent but couldn't be confirmed",
-  cancel: "the invoice is still open",
-};
-
-export function failureSummary(error: PayPalError, step: PayPalStep): string {
-  switch (error.failure) {
-    case "rejected":
-      return `PayPal refused the request while ${stepText[step]}${error.issue ? ` (${error.issue})` : ""}; ${refusalMeans[step]}.`;
-    case "auth":
-      return `PayPal didn't accept the app's credentials while ${stepText[step]}.`;
-    case "not_found":
-      return `PayPal couldn't find the invoice while ${stepText[step]}.`;
-    default:
-      return `PayPal didn't respond while ${stepText[step]}; trying again won't bill the client twice.`;
-  }
-}
-
-export function actionErrorFor(error: PayPalError): PayPalActionError {
-  if (error.failure === "not_configured") return "not_configured";
-  return error.failure === "rejected" ? "paypal_rejected" : "paypal_unavailable";
-}
 
 const hoursFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 
@@ -125,35 +90,6 @@ function invoiceInputFor(order: BillingOrder): InvoiceInput {
     amountCents: order.amountCents,
     recipient: { email: project.clientEmail, businessName: project.clientName },
   };
-}
-
-export interface FailureRecord {
-  ownerProjectId: string;
-  changeOrderId: string;
-  step: PayPalStep;
-  summary: string;
-  detail: ActivityDetail;
-}
-
-// Best effort: a failed PayPal call is logged and recorded, but failing to record it never changes the answer.
-export async function recordFailure(deps: BillingDeps, record: FailureRecord): Promise<void> {
-  try {
-    await activityInsert(deps.db, {
-      projectId: record.ownerProjectId,
-      changeOrderId: record.changeOrderId,
-      kind: "paypal_failed",
-      actor: "paypal",
-      summary: record.summary,
-      detail: { step: record.step, ...record.detail },
-      at: deps.now().toISOString(),
-    });
-  } catch (error) {
-    console.error("recording a PayPal failure failed", error);
-  }
-}
-
-export function errorDetail(error: PayPalError): ActivityDetail {
-  return { httpStatus: error.httpStatus, issue: error.issue, debugId: error.debugId };
 }
 
 // Best effort: a claim that can't be given up (the database is down) expires after SEND_CLAIM_TTL_MS anyway.

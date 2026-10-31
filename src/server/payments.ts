@@ -4,7 +4,7 @@ import type { BillingActionResult } from "@/domain/action-result";
 import { invoiceNumberFor } from "@/domain/invoice";
 import { formatUsd } from "@/domain/money";
 import { paymentDecision, paymentPrecheck, type PaymentDecision } from "@/domain/payment";
-import { actionErrorFor, errorDetail, failureSummary, recordFailure, type BillingDeps } from "./billing";
+import { actionErrorFor, errorDetail, failureSummary, recordFailure } from "./billing-errors";
 import { activityInsertAfterChange } from "./db/activity";
 import { markPaid, markPaidFromDraft, ownedStatus, readPayableOrder, type PayableOrder } from "./db/change-orders";
 import type { Db } from "./db/client";
@@ -16,6 +16,14 @@ import type { InvoiceView } from "./paypal/invoices";
 // when two of them arrive together only one moves the order, and only that one leaves activity steps behind.
 
 export type PaymentSource = "webhook" | "check" | "send";
+
+// What "Check payment" needs. billing.ts's BillingDeps fits it; this file doesn't import billing.ts, which imports
+// settleStatements from here (P3-D2).
+export interface PaymentDeps {
+  db: Db;
+  paypal: { get(invoiceId: string): Promise<InvoiceView> } | null; // null: no PayPal keys on this server
+  now: () => Date;
+}
 
 // The statements that settle an order, for a db.batch(): the UPDATE, then its activity steps, each written only if
 // the statement before it changed a row (activityInsertAfterChange). From a draft: invoice_sent (recovered: true)
@@ -65,7 +73,7 @@ const fail = (error: BillingError): BillingActionResult => ({ ok: false, error }
 // ok: the order is paid (now or before) · not_paid_yet · invoice_changed (mismatch) · invalid_state (waived, cancelled,
 // draft without invoice) · not_found · not_configured · paypal_unavailable / paypal_rejected (read failed, recorded
 // as a paypal_failed step "read").
-export async function checkOwnedPayment(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
+export async function checkOwnedPayment(deps: PaymentDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
   const { db, paypal, now } = deps;
   if (!paypal) return fail("not_configured");
 
