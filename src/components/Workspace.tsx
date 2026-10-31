@@ -216,7 +216,7 @@ function Composer({ client }: ComposerProps) {
         id="incoming"
         rows={3}
         placeholder="Paste their latest email or chat message"
-        className="mt-2 block w-full max-w-[62ch] resize-y rounded-md border border-rule bg-sheet px-3 py-2 font-serif text-[17px] leading-relaxed placeholder:text-ink-soft/70"
+        className="mt-2 block w-full max-w-[62ch] resize-y rounded-md border border-ink-soft bg-sheet px-3 py-2 font-serif text-[17px] leading-relaxed placeholder:text-ink-soft"
       />
       <div className="mt-3 flex max-w-[62ch] flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-ink-soft">Claude compares it with scope version 1.</p>
