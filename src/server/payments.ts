@@ -95,7 +95,7 @@ export async function checkOwnedPayment(deps: PaymentDeps, ownerProjectId: strin
 
   const decision = paymentDecision(order, invoice);
   if (decision.kind === "mismatch") {
-    console.error(`invoice ${invoice.id} doesn't match its change order's reference or amount; not marked paid`);
+    console.error(`invoice ${invoice.id} doesn't match its change order's reference, amount or currency; not marked paid`);
     return fail("invoice_changed");
   }
   const [first, ...rest] = settleStatements(db, order, invoice, decision, now().toISOString(), "check");

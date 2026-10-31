@@ -241,6 +241,7 @@ describe("청구서 발송·조회·취소", () => {
       invoiceNumber: INVOICE_NUMBER,
       reference: CHANGE_ORDER_ID,
       amountValue: "650.00",
+      currencyCode: "USD",
       payerViewUrl: PAYER_VIEW_URL,
     });
   });

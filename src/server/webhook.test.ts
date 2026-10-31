@@ -70,6 +70,7 @@ describe("PayPal 결제 웹훅", () => {
     invoiceNumber: "TG-4ILUBN7LCCN6SKDSN5C15S",
     reference: orderId,
     amountValue: "650.00",
+    currencyCode: "USD",
     payerViewUrl: PAYER_VIEW_URL,
     ...overrides,
   });
@@ -320,20 +321,22 @@ describe("PayPal 결제 웹훅", () => {
     expect((await order()).status).toBe("paid");
   });
 
-  it("reference나 금액이 견적과 다르면 paid로 바꾸지 않고 mismatch로 기록한다", async () => {
+  it("reference·금액·통화가 견적과 다르면 paid로 바꾸지 않고 mismatch로 기록한다", async () => {
     await markSentOrder();
     const otherAmount = deps({}, async () => invoiceView("PAID", { amountValue: "600.00" }));
     const otherReference = deps({}, async () => invoiceView("PAID", { reference: "11111111-2222-4333-8444-555555555555" }));
+    const otherCurrency = deps({}, async () => invoiceView("PAID", { currencyCode: "EUR" }));
 
     const replies = [
       await receivePayPalWebhook(otherAmount.deps, webhookRequest(eventBody({ id: "WH-AMOUNT-1" }))),
       await receivePayPalWebhook(otherReference.deps, webhookRequest(eventBody({ id: "WH-REFERENCE-1" }))),
+      await receivePayPalWebhook(otherCurrency.deps, webhookRequest(eventBody({ id: "WH-CURRENCY-1" }))),
     ];
 
-    expect(replies).toEqual(Array(2).fill({ status: 200, outcome: "mismatch" }));
+    expect(replies).toEqual(Array(3).fill({ status: 200, outcome: "mismatch" }));
     expect((await order()).status).toBe("sent");
     expect(await kinds()).toEqual([]);
-    expect((await events()).map((e) => e.outcome)).toEqual(["mismatch", "mismatch"]);
+    expect((await events()).map((e) => e.outcome)).toEqual(["mismatch", "mismatch", "mismatch"]);
   });
 
   it("같은 이벤트 두 개가 동시에 와도 상태 변화와 payment_confirmed 기록은 한 번이다", async () => {

@@ -42,6 +42,7 @@ export interface InvoiceView {
   invoiceNumber: string | null;
   reference: string | null;
   amountValue: string | null; // "650.00"
+  currencyCode: string | null; // "USD"
   payerViewUrl: string | null; // passed through safePayerViewUrl
 }
 
@@ -121,6 +122,7 @@ function toView(json: unknown, environment: PayPalClient["environment"]): Invoic
     invoiceNumber: text(field(detail, "invoice_number")),
     reference: text(field(detail, "reference")),
     amountValue: text(field(field(json, "amount"), "value")),
+    currencyCode: text(field(field(json, "amount"), "currency_code")),
     payerViewUrl: safePayerViewUrl(field(field(detail, "metadata"), "recipient_view_url"), environment),
   };
 }

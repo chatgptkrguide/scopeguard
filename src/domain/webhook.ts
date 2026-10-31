@@ -3,7 +3,7 @@
 export const WEBHOOK_OUTCOMES = [
   "settled", // the order moved (or already had moved) to paid
   "not_settled", // PayPal shows it unpaid, partly paid or pending: the order stays sent
-  "mismatch", // reference or amount differs from the order: not marked paid
+  "mismatch", // reference, amount or currency differs from the order: not marked paid
   "unknown_invoice", // no change order holds this invoice id
   "already_paid", // the order was paid before this event (no PayPal call)
   "order_closed", // waived or cancelled order holding the id (logged as a warning)

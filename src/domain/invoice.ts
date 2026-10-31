@@ -69,3 +69,6 @@ export const SETTLED: ReadonlySet<PayPalInvoiceStatus> = new Set(["PAID", "MARKE
 // Money is moving but the invoice isn't paid in full yet: the order stays sent. PayPal sends its "paid" webhook for
 // these too ("paid, partially paid, or payment is made and is pending").
 export const PAYMENT_UNDER_WAY: ReadonlySet<PayPalInvoiceStatus> = new Set(["PARTIALLY_PAID", "PAYMENT_PENDING"]);
+
+// The only currency the app invoices in (invoices.ts makes every invoice in USD).
+export const INVOICE_CURRENCY = "USD";

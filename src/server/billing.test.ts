@@ -63,6 +63,7 @@ const sentView = (id: string, changeOrderId: string): InvoiceView => ({
   invoiceNumber: invoiceNumberFor(changeOrderId),
   reference: changeOrderId,
   amountValue: "650.00",
+  currencyCode: "USD",
   payerViewUrl: PAYER_VIEW_URL,
 });
 

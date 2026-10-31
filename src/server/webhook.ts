@@ -18,7 +18,7 @@ import { MAX_WEBHOOK_BYTES, readWebhookHeaders, verifyWebhookSignature, type Ver
 // three days): 5xx when a retry could help (no webhook id yet, PayPal or the database unavailable, an event we
 // couldn't read), 200 when it can't (duplicates, unknown invoices, unpaid invoices, other event types), 400 for
 // forged or malformed requests, 413 past 64 KB. Nothing is written and no invoice is read before PayPal confirms the
-// signature. Only the invoice id is taken from the event; the status, reference and amount come from PayPal.
+// signature. Only the invoice id is taken from the event; the status, reference, amount and currency come from PayPal.
 // Logs carry the event id, type, outcome and PayPal's issue and debug id: never the body, a header or an email.
 
 export interface WebhookVerifier {
@@ -224,7 +224,7 @@ export async function receivePayPalWebhook(deps: WebhookDeps, request: Request):
 
     const decision = paymentDecision(order, invoice);
     if (decision.kind === "mismatch") {
-      console.error(`paypal webhook ${head.id}: invoice ${invoiceId} doesn't match its change order's reference or amount; not marked paid`);
+      console.error(`paypal webhook ${head.id}: invoice ${invoiceId} doesn't match its change order's reference, amount or currency; not marked paid`);
       return await record("mismatch", invoiceId);
     }
     if (decision.kind === "not_settled") return await record("not_settled", invoiceId);

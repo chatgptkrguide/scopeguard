@@ -267,7 +267,7 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
         calls.send.push(id);
         return "sent";
       },
-      get: async (id) => ({ id, status: "SENT", invoiceNumber: null, reference: null, amountValue: "650.00", payerViewUrl: "https://www.sandbox.paypal.com/invoice/p/#DZQMQREH7LATF7YR" }),
+      get: async (id) => ({ id, status: "SENT", invoiceNumber: null, reference: null, amountValue: "650.00", currencyCode: "USD", payerViewUrl: "https://www.sandbox.paypal.com/invoice/p/#DZQMQREH7LATF7YR" }),
       cancel: async (id) => {
         calls.cancel.push(id);
         return "cancelled";
@@ -345,7 +345,7 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
   it("발송하다 PayPal에서 취소된 청구서를 만나면(invoice_void) 화면이 Quote again으로 바뀌도록 refresh를 부른다", async () => {
     signIn(me);
     const draft = await draftOf(mine);
-    request.paypal = { ...healthyPayPal(), get: async (id) => ({ id, status: "CANCELLED", invoiceNumber: null, reference: null, amountValue: "650.00", payerViewUrl: null }) };
+    request.paypal = { ...healthyPayPal(), get: async (id) => ({ id, status: "CANCELLED", invoiceNumber: null, reference: null, amountValue: "650.00", currencyCode: "USD", payerViewUrl: null }) };
 
     const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
 
@@ -507,7 +507,7 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
     const draft = await draftOf(mine);
     await sendChangeOrder(null, form({ changeOrderId: draft.id }));
     vi.mocked(refresh).mockClear();
-    const view = (status: string) => ({ id: "INV2-DZQM-QREH-7LAT-F7YR", status, invoiceNumber: null, reference: draft.id, amountValue: "650.00", payerViewUrl: null });
+    const view = (status: string) => ({ id: "INV2-DZQM-QREH-7LAT-F7YR", status, invoiceNumber: null, reference: draft.id, amountValue: "650.00", currencyCode: "USD", payerViewUrl: null });
 
     request.paypal = { ...healthyPayPal(), get: async () => view("SENT") };
     const notYet = await checkPayment(null, form({ changeOrderId: draft.id }));

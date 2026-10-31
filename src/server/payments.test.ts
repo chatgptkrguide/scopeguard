@@ -43,6 +43,7 @@ describe("결제 확인 (Check payment)", () => {
     invoiceNumber: "TG-4ILUBN7LCCN6SKDSN5C15S",
     reference: orderId,
     amountValue: "650.00",
+    currencyCode: "USD",
     payerViewUrl: PAYER_VIEW_URL,
     ...overrides,
   });
@@ -161,10 +162,12 @@ describe("결제 확인 (Check payment)", () => {
     expect(await checkOwnedPayment(deps(paypal.gateway), mine, orderId)).toEqual({ ok: false, error: "paypal_rejected" });
   });
 
-  it("금액이 다르면 invoice_changed이고 paid가 되지 않는다", async () => {
+  it("금액이나 통화가 다르면 invoice_changed이고 paid가 되지 않는다", async () => {
     const result = await checkOwnedPayment(deps(fakeInvoices(async () => invoiceView("PAID", { amountValue: "600.00" })).gateway), mine, orderId);
+    const otherCurrency = await checkOwnedPayment(deps(fakeInvoices(async () => invoiceView("PAID", { currencyCode: "EUR" })).gateway), mine, orderId);
 
     expect(result).toEqual({ ok: false, error: "invoice_changed" });
+    expect(otherCurrency).toEqual({ ok: false, error: "invoice_changed" });
     expect((await order()).status).toBe("sent");
     expect(await kinds()).toEqual([]);
   });

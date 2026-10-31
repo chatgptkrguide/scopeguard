@@ -1,4 +1,4 @@
-import { PAYMENT_UNDER_WAY, SETTLED, type PayPalInvoiceStatus } from "./invoice";
+import { INVOICE_CURRENCY, PAYMENT_UNDER_WAY, SETTLED, type PayPalInvoiceStatus } from "./invoice";
 import { toPayPalValue } from "./money";
 import type { ChangeOrderStatus } from "./types";
 
@@ -17,6 +17,7 @@ export interface InvoiceFacts {
   status: PayPalInvoiceStatus;
   reference: string | null; // the change order id the invoice was made for
   amountValue: string | null; // "650.00"
+  currencyCode: string | null; // "USD"
 }
 
 // Before reading PayPal: is there anything to settle?
@@ -40,13 +41,14 @@ export function paymentPrecheck(order: PaymentOrder): PaymentPrecheck {
 export type PaymentDecision =
   | { kind: "settle"; from: "sent" | "draft" } // draft: recorded as sent, then paid
   | { kind: "not_settled"; underWay: boolean } // underWay: partly paid or pending
-  | { kind: "mismatch" }; // the invoice's reference isn't this order's id, or its amount isn't the order's
+  | { kind: "mismatch" }; // the invoice's reference isn't this order's id, or its amount or currency isn't the order's
 
-// Only for an order paymentPrecheck answered "read" for. The reference and amount are checked first: an invoice
-// that doesn't belong to this order at this price never settles it, whatever its status.
+// Only for an order paymentPrecheck answered "read" for. The reference, amount and currency are checked first: an
+// invoice that doesn't belong to this order at this price never settles it, whatever its status.
 export function paymentDecision(order: PaymentOrder, invoice: InvoiceFacts): PaymentDecision {
   if (paymentPrecheck(order) !== "read") throw new RangeError(`no payment to decide for a ${order.status} order`);
-  if (invoice.reference !== order.id || invoice.amountValue !== toPayPalValue(order.amountCents)) return { kind: "mismatch" };
+  const samePrice = invoice.amountValue === toPayPalValue(order.amountCents) && invoice.currencyCode === INVOICE_CURRENCY;
+  if (invoice.reference !== order.id || !samePrice) return { kind: "mismatch" };
   if (SETTLED.has(invoice.status)) return { kind: "settle", from: order.status === "draft" ? "draft" : "sent" };
   return { kind: "not_settled", underWay: PAYMENT_UNDER_WAY.has(invoice.status) };
 }

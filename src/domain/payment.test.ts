@@ -3,7 +3,7 @@ import { paymentDecision, paymentPrecheck, type InvoiceFacts, type PaymentOrder 
 
 const ORDER_ID = "0244f9b8-b8ac-4e6b-b86d-f3d648c071e0";
 const sent: PaymentOrder = { id: ORDER_ID, status: "sent", amountCents: 65000, paypalInvoiceId: "INV2-DZQM-QREH-7LAT-F7YR" };
-const facts = (status: string, overrides: Partial<InvoiceFacts> = {}): InvoiceFacts => ({ status, reference: ORDER_ID, amountValue: "650.00", ...overrides });
+const facts = (status: string, overrides: Partial<InvoiceFacts> = {}): InvoiceFacts => ({ status, reference: ORDER_ID, amountValue: "650.00", currencyCode: "USD", ...overrides });
 
 describe("결제 정산 판단", () => {
   it("정산 판단: sent이고 PAID·reference·금액이 맞으면 settle(from sent)이다", () => {
@@ -31,6 +31,12 @@ describe("결제 정산 판단", () => {
     expect(paymentDecision(sent, facts("PAID", { amountValue: "650" }))).toEqual({ kind: "mismatch" });
     expect(paymentDecision(sent, facts("PAID", { amountValue: "600.00" }))).toEqual({ kind: "mismatch" });
     expect(paymentDecision(sent, facts("PAID", { amountValue: null }))).toEqual({ kind: "mismatch" });
+  });
+
+  it("정산 판단: 금액이 같아도 통화가 USD가 아니거나 없으면 mismatch다", () => {
+    expect(paymentDecision(sent, facts("PAID", { currencyCode: "EUR" }))).toEqual({ kind: "mismatch" });
+    expect(paymentDecision(sent, facts("PAID", { currencyCode: "usd" }))).toEqual({ kind: "mismatch" });
+    expect(paymentDecision(sent, facts("PAID", { currencyCode: null }))).toEqual({ kind: "mismatch" });
   });
 
   it("사전 판단: paid는 already_paid, waived·cancelled는 closed, 청구서 없는 draft는 no_invoice다", () => {
