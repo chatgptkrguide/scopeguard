@@ -4,10 +4,11 @@ import { Workspace } from "@/components/Workspace";
 import { WorkspaceSkeleton } from "@/components/WorkspaceSkeleton";
 import { getDb } from "@/server/db/client";
 import { openVisitorWorkspace } from "@/server/db/queries";
+import { paypalConfig } from "@/server/paypal/token";
 import { readVisitorId } from "@/server/session";
 
-// Sending stays off until the PayPal invoice flow lands (P2).
-const SEND_BLOCKED_REASON = "PayPal invoicing isn't connected yet, so nothing is sent.";
+// Without sandbox keys (a judge running it locally, the phase 1 browser tests) sending stays off and says why.
+const SEND_BLOCKED_REASON = "PayPal sandbox keys aren't set on this server, so nothing can be sent.";
 
 export default function Home() {
   return (
@@ -26,7 +27,7 @@ async function VisitorWorkspace(): Promise<ReactElement> {
   await connection();
 
   const data = await openVisitorWorkspace(getDb(), visitorId, new Date());
-  return <Workspace data={data} sendBlockedReason={SEND_BLOCKED_REASON} />;
+  return <Workspace data={data} sendBlockedReason={paypalConfig() ? null : SEND_BLOCKED_REASON} />;
 }
 
 // Only when the request skipped proxy.ts, so it has no visitor cookie yet.

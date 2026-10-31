@@ -9,7 +9,7 @@ import type { FindingWithOrder, ThreadMessage, WorkspaceData } from "@/domain/wo
 
 export interface WorkspaceProps {
   data: WorkspaceData;
-  sendBlockedReason: string | null; // P1: always set. P2 clears it once PayPal is configured
+  sendBlockedReason: string | null; // set when this server has no PayPal keys, so sending and cancelling are off
 }
 
 const statusText: Record<ChangeOrderStatus, string> = {
@@ -124,9 +124,11 @@ function MessageRow({ message, sendBlockedReason }: MessageRowProps) {
       </div>
       {quoted.length > 0 && (
         <div className="space-y-6">
+          {/* Keyed by finding: quoting a cancelled order again shows a new order in the same note, which stays
+              mounted so its buttons can move focus to the new status. */}
           {quoted.map(({ finding, order }) => (
             <MarginNote
-              key={order.id}
+              key={finding.id}
               quote={finding.quote}
               reason={finding.reason}
               order={order}
@@ -204,7 +206,7 @@ function MarginNote({ quote, reason, order, sendBlockedReason }: MarginNoteProps
       data-change-order-id={order.id}
       data-status={order.status}
     >
-      {/* Takes focus after a waive (the buttons are gone), and announces the new status. */}
+      {/* Takes focus after an action (the pressed button is gone), and announces the new status. */}
       <p id={statusLineId(order)} role="status" tabIndex={-1} className={`text-sm font-semibold ${statusColor[order.status]}`}>
         {open ? "Not in the agreed scope" : statusLine(order)}
       </p>
@@ -217,10 +219,10 @@ function MarginNote({ quote, reason, order, sendBlockedReason }: MarginNoteProps
         <span className="ml-2 text-sm text-ink-soft">{moreDays(order.extraDays)}</span>
       </p>
       {open && <p className="mt-3 text-sm leading-relaxed text-ink-soft">{reason}</p>}
-      {/* Rendered for every status (it draws nothing once settled), so it stays mounted through the refresh
-          after a waive and can move focus to the status line. */}
+      {/* Rendered for every status (it draws nothing once paid or waived), so it stays mounted through the
+          refresh after an action and can move focus to the status line. */}
       <ChangeOrderActions
-        order={{ id: order.id, status: order.status }}
+        order={{ id: order.id, status: order.status, payerViewUrl: order.payerViewUrl }}
         sendBlockedReason={sendBlockedReason}
         statusLineId={statusLineId(order)}
       />

@@ -1,22 +1,32 @@
 "use client";
 
-import { useActionState, useEffect, useId, useRef, useState } from "react";
+import { useActionState, useEffect, useId, useRef, useState, type MouseEvent, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { waiveChangeOrder } from "@/app/actions";
-import type { ActionError } from "@/domain/action-result";
+import { cancelChangeOrder, requoteChangeOrder, sendChangeOrder, waiveChangeOrder } from "@/app/actions";
+import type { ActionError, ActionResult, BillingActionResult, PayPalActionError } from "@/domain/action-result";
 import type { ChangeOrder } from "@/domain/types";
 
 export interface ChangeOrderActionsProps {
-  order: Pick<ChangeOrder, "id" | "status">;
-  sendBlockedReason: string | null; // why sending is off; null once PayPal is connected (P2)
-  statusLineId: string; // the note's status line (role="status", tabIndex -1), focused after a waive
+  order: Pick<ChangeOrder, "id" | "status" | "payerViewUrl">;
+  sendBlockedReason: string | null; // why PayPal actions are off (no keys on this server); null when they work
+  statusLineId: string; // the note's status line (role="status", tabIndex -1), focused after an action succeeds
 }
 
-const errorText: Record<ActionError, string> = {
+const errorText: Record<ActionError | PayPalActionError, string> = {
   invalid_input: "This change order isn't in your demo copy. Reload the page.",
   not_found: "This change order isn't in your demo copy. Reload the page.",
   invalid_state: "This change order was already updated. Reload to see it.",
   server_error: "This couldn't be saved just now. Nothing changed; try again.",
+  in_progress: "This invoice is already being sent. Wait a moment, then reload.",
+  paypal_unavailable: "PayPal didn't respond. Try again; the client won't get a second invoice.",
+  paypal_rejected: "PayPal refused this request, so nothing changed here.",
+  already_paid: "The client already paid this invoice, so it can't be cancelled.",
+  not_configured: "PayPal isn't set up on this server, so nothing was sent.",
+};
+
+const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {
+  paypal_unavailable: "PayPal didn't respond, so the invoice is still open. Try again.",
+  not_configured: "PayPal isn't set up on this server, so the invoice wasn't cancelled.",
 };
 
 // Pressing shows a color change; a disabled (aria-disabled) button shows none and takes palette colors.
@@ -25,103 +35,214 @@ const PRIMARY =
 const SECONDARY =
   "min-h-11 rounded-md border border-rule bg-sheet px-3 text-sm font-semibold text-ink-soft not-aria-disabled:hover:border-ink-soft not-aria-disabled:hover:text-ink not-aria-disabled:active:bg-paper aria-disabled:cursor-wait";
 
-// The buttons under an open change order. The browser sends only the order id; the server decides the rest.
-export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: ChangeOrderActionsProps) {
-  const [state, waiveAction, pending] = useActionState(waiveChangeOrder, null);
-  // Waived is final, so taking the charge off asks once more before anything reaches the server (D-015).
-  const [confirming, setConfirming] = useState(false);
-  const includeRef = useRef<HTMLButtonElement>(null);
-  const keepRef = useRef<HTMLButtonElement>(null);
-  const reasonId = useId();
-  const confirmId = useId();
-
-  // A waive removes these buttons, which held focus. Moving it to the status line keeps the keyboard
-  // in the note, and the screen reader reads the new status ("Included at no charge").
+// The pressed button is about to disappear (the note changes state), so focus goes to the status line,
+// and the screen reader reads the new status.
+function useFocusOnSuccess(state: ActionResult | BillingActionResult | null, statusLineId: string) {
   useEffect(() => {
     if (state?.ok) document.getElementById(statusLineId)?.focus();
   }, [state, statusLineId]);
+}
 
-  if (order.status !== "draft") return null;
+// The buttons under a change order: send or include at no charge (draft), the client's PayPal page and cancel
+// (sent), quote again (cancelled). The browser sends only the order id; the server decides the rest.
+export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: ChangeOrderActionsProps) {
+  // Every hook stays here, whatever the status, so the component stays mounted through the refresh after an
+  // action and can move focus once the new status arrives.
+  const [waiveState, waiveAction, waiving] = useActionState(waiveChangeOrder, null);
+  const [sendState, sendAction, sending] = useActionState(sendChangeOrder, null);
+  const [cancelState, cancelAction, cancelling] = useActionState(cancelChangeOrder, null);
+  const [requoteState, requoteAction, requoting] = useActionState(requoteChangeOrder, null);
+  // Which confirmation is open, for which order: quoting again gives this note a new order.
+  const [confirming, setConfirming] = useState<{ step: "waive" | "cancel"; orderId: string } | null>(null);
+  const includeRef = useRef<HTMLButtonElement>(null);
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const keepInvoiceRef = useRef<HTMLButtonElement>(null);
+  const reasonId = useId();
+  const confirmId = useId();
+  const cancelConfirmId = useId();
 
-  // The pressed button is replaced, so focus moves to the one in its place. "Keep the charge" takes the
-  // first spot, so a double click on "Include at no charge" lands on it rather than on the confirmation.
-  const askToConfirm = () => {
-    flushSync(() => setConfirming(true));
-    keepRef.current?.focus();
+  useFocusOnSuccess(waiveState, statusLineId);
+  useFocusOnSuccess(sendState, statusLineId);
+  useFocusOnSuccess(cancelState, statusLineId);
+  useFocusOnSuccess(requoteState, statusLineId);
+
+  const blocked = sendBlockedReason !== null;
+  const isConfirming = (step: "waive" | "cancel") => confirming?.step === step && confirming.orderId === order.id;
+
+  // Opening or closing a confirmation replaces the pressed button, so focus moves to the one in its place.
+  // The "keep" button takes the first spot, so a double click lands on it rather than on the confirmation.
+  const openConfirm = (step: "waive" | "cancel", target: RefObject<HTMLButtonElement | null>) => {
+    flushSync(() => setConfirming({ step, orderId: order.id }));
+    target.current?.focus();
   };
-  const keepCharge = () => {
-    flushSync(() => setConfirming(false));
-    includeRef.current?.focus();
+  const closeConfirm = (target: RefObject<HTMLButtonElement | null>) => {
+    flushSync(() => setConfirming(null));
+    target.current?.focus();
+  };
+  // No second submit while the first is running. Nothing else happens on the click: a re-render here would
+  // rewrite the hidden id before the form is read.
+  const submitOnce = (busy: boolean) => (event: MouseEvent<HTMLButtonElement>) => {
+    if (busy) event.preventDefault();
   };
 
-  return (
-    <div className="mt-4">
-      <div className="flex flex-wrap gap-2">
-        {/* aria-disabled, not disabled: keyboard and screen reader users can still reach it and hear why. */}
-        <button
-          type="button"
-          aria-disabled={sendBlockedReason ? true : undefined}
-          aria-describedby={sendBlockedReason ? reasonId : undefined}
-          className={`${PRIMARY} aria-disabled:cursor-not-allowed`}
-        >
-          Send change order
-        </button>
-        <form action={waiveAction} data-action="waive" className="flex flex-wrap gap-2">
+  const reason = blocked && (
+    <p id={reasonId} className="mt-2 text-sm leading-relaxed text-ink-soft">
+      {sendBlockedReason}
+    </p>
+  );
+  // Each action keeps its last answer until it runs again; a success changes the status, which hides the panel.
+  const errorFor = (state: ActionResult | BillingActionResult | null, texts: Partial<Record<ActionError | PayPalActionError, string>> = {}) =>
+    state &&
+    !state.ok && (
+      <p role="alert" className="mt-2 border-l-2 border-mark pl-3 text-sm font-semibold text-ink">
+        {texts[state.error] ?? errorText[state.error]}
+      </p>
+    );
+
+  if (order.status === "draft") {
+    const confirmingWaive = isConfirming("waive");
+    return (
+      <div className="mt-4">
+        <div className="flex flex-wrap gap-2">
+          <form action={sendAction} data-action="send">
+            <input type="hidden" name="changeOrderId" value={order.id} />
+            {/* aria-disabled, not disabled: keyboard and screen reader users can still reach it and hear why. */}
+            <button
+              type="submit"
+              aria-disabled={blocked || sending || undefined}
+              aria-describedby={blocked ? reasonId : undefined}
+              onClick={submitOnce(blocked || sending)}
+              className={`${PRIMARY} ${blocked ? "aria-disabled:cursor-not-allowed" : "aria-disabled:cursor-wait"}`}
+            >
+              {sending ? "Sending…" : "Send change order"}
+            </button>
+          </form>
+          <form action={waiveAction} data-action="waive" className="flex flex-wrap gap-2">
+            <input type="hidden" name="changeOrderId" value={order.id} />
+            {confirmingWaive ? (
+              <>
+                <button
+                  key="keep"
+                  ref={keepRef}
+                  type="button"
+                  onClick={waiving ? undefined : () => closeConfirm(includeRef)}
+                  aria-disabled={waiving || undefined}
+                  aria-describedby={confirmId}
+                  className={SECONDARY}
+                >
+                  Keep the charge
+                </button>
+                {/* aria-disabled while saving, not disabled: a disabled button drops the focus it holds. */}
+                <button
+                  key="confirm"
+                  type="submit"
+                  aria-disabled={waiving || undefined}
+                  aria-describedby={confirmId}
+                  onClick={submitOnce(waiving)}
+                  className={`${PRIMARY} aria-disabled:cursor-wait`}
+                >
+                  Confirm: include at no charge
+                </button>
+              </>
+            ) : (
+              <button key="include" ref={includeRef} type="button" onClick={() => openConfirm("waive", keepRef)} className={SECONDARY}>
+                Include at no charge
+              </button>
+            )}
+          </form>
+        </div>
+        {confirmingWaive && (
+          <p id={confirmId} className="mt-2 text-sm leading-relaxed">
+            The client won&apos;t be billed for this, and it can&apos;t be undone.
+          </p>
+        )}
+        {reason}
+        {errorFor(sendState)}
+        {errorFor(waiveState)}
+      </div>
+    );
+  }
+
+  if (order.status === "sent") {
+    const confirmingCancel = isConfirming("cancel");
+    return (
+      <div className="mt-4">
+        {order.payerViewUrl && (
+          <a
+            href={order.payerViewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-11 items-center text-sm font-semibold text-ink underline decoration-mark underline-offset-4 hover:decoration-ink"
+          >
+            Open the client&apos;s PayPal page
+            <span className="sr-only"> (opens in a new tab)</span>
+          </a>
+        )}
+        <form action={cancelAction} data-action="cancel" className="mt-2 flex flex-wrap gap-2">
           <input type="hidden" name="changeOrderId" value={order.id} />
-          {confirming ? (
+          {confirmingCancel ? (
             <>
               <button
-                key="keep"
-                ref={keepRef}
+                key="keep-invoice"
+                ref={keepInvoiceRef}
                 type="button"
-                onClick={pending ? undefined : keepCharge}
-                aria-disabled={pending || undefined}
-                aria-describedby={confirmId}
+                onClick={cancelling ? undefined : () => closeConfirm(cancelRef)}
+                aria-disabled={cancelling || undefined}
+                aria-describedby={cancelConfirmId}
                 className={SECONDARY}
               >
-                Keep the charge
+                Keep the invoice
               </button>
-              {/* aria-disabled while saving, not disabled: a disabled button drops the focus it holds. */}
               <button
-                key="confirm"
+                key="confirm-cancel"
                 type="submit"
-                aria-disabled={pending || undefined}
-                onClick={(event) => {
-                  if (pending) event.preventDefault(); // no second submit while the first is saving
-                }}
+                aria-disabled={cancelling || undefined}
+                aria-describedby={cancelConfirmId}
+                onClick={submitOnce(cancelling)}
                 className={`${PRIMARY} aria-disabled:cursor-wait`}
               >
-                Confirm: include at no charge
+                {cancelling ? "Cancelling…" : "Confirm: cancel the invoice"}
               </button>
             </>
           ) : (
             <button
-              key="include"
-              ref={includeRef}
+              key="cancel"
+              ref={cancelRef}
               type="button"
-              onClick={askToConfirm}
-              className={SECONDARY}
+              aria-disabled={blocked || undefined}
+              aria-describedby={blocked ? reasonId : undefined}
+              onClick={blocked ? undefined : () => openConfirm("cancel", keepInvoiceRef)}
+              className={`${SECONDARY} aria-disabled:cursor-not-allowed`}
             >
-              Include at no charge
+              Cancel invoice
             </button>
           )}
         </form>
+        {confirmingCancel && (
+          <p id={cancelConfirmId} className="mt-2 text-sm leading-relaxed">
+            PayPal will cancel the invoice and the client can no longer pay it. You can quote this again afterwards.
+          </p>
+        )}
+        {reason}
+        {errorFor(cancelState, cancelErrorText)}
       </div>
-      {confirming && (
-        <p id={confirmId} className="mt-2 text-sm leading-relaxed">
-          The client won&apos;t be billed for this, and it can&apos;t be undone.
-        </p>
-      )}
-      {sendBlockedReason && (
-        <p id={reasonId} className="mt-2 text-sm leading-relaxed text-ink-soft">
-          {sendBlockedReason}
-        </p>
-      )}
-      {state && !state.ok && (
-        <p role="alert" className="mt-2 border-l-2 border-mark pl-3 text-sm font-semibold text-ink">
-          {errorText[state.error]}
-        </p>
-      )}
-    </div>
-  );
+    );
+  }
+
+  if (order.status === "cancelled") {
+    return (
+      <div className="mt-4">
+        <form action={requoteAction} data-action="requote">
+          <input type="hidden" name="changeOrderId" value={order.id} />
+          <button type="submit" aria-disabled={requoting || undefined} onClick={submitOnce(requoting)} className={SECONDARY}>
+            {requoting ? "Quoting…" : "Quote again"}
+          </button>
+        </form>
+        {errorFor(requoteState)}
+      </div>
+    );
+  }
+
+  return null; // paid and waived are settled
 }
