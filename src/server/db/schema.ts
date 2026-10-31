@@ -3,6 +3,7 @@ import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "dri
 // Relative imports: drizzle-kit loads this file without the "@/" path alias.
 import type { ActivityActor, ActivityDetail, ActivityKind } from "../../domain/activity";
 import { CHANGE_ORDER_STATUSES } from "../../domain/types";
+import type { WebhookOutcome } from "../../domain/webhook";
 
 export const projects = sqliteTable(
   "projects",
@@ -129,13 +130,31 @@ export const changeOrders = sqliteTable(
   ],
 );
 
-// PayPal event ids already handled, so a redelivered webhook changes nothing.
+// PayPal event ids already handled, so a redelivered webhook changes nothing. A row is written in the same batch as
+// the change it caused, so it also means "handled" (processed_at = received_at). The three later columns were added
+// by migration 0004 and are NULL on rows from before it.
 export const webhookEvents = sqliteTable("webhook_events", {
   id: text().primaryKey(),
   eventType: text("event_type").notNull(),
   receivedAt: text("received_at").notNull(),
   processedAt: text("processed_at"),
+  invoiceId: text("invoice_id"),
+  outcome: text().$type<WebhookOutcome>(),
+  // The event's create_time, kept to measure how late PayPal delivered it.
+  eventCreatedAt: text("event_created_at"),
 });
+
+// Every PayPal send the server let through, for the server-wide cap (P2-S1, P2-S1b). No foreign key on purpose: a demo
+// reset or the seven-day cleanup deletes the copy's orders, and the count must stay. Rows older than a day are pruned.
+export const paypalSends = sqliteTable(
+  "paypal_sends",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    changeOrderId: text("change_order_id").notNull(),
+    at: text().notNull(),
+  },
+  (t) => [index("paypal_sends_at_idx").on(t.at)],
+);
 
 // The steps shown in the activity panel, written in the same batch as the change they describe.
 // No CHECK on kind or actor: later phases add kinds, and SQLite can only change a CHECK by rebuilding the table.

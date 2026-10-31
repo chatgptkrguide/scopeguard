@@ -92,6 +92,11 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+// True for an id in PayPal's invoice id shape (INV2-XXXX-XXXX-XXXX-XXXX).
+export function isPayPalInvoiceId(value: unknown): value is string {
+  return typeof value === "string" && INVOICE_ID.test(value);
+}
+
 function invoicePath(invoiceId: string, action = ""): string {
   // The id comes from our database, but it still goes into a URL, so only PayPal's shape is allowed.
   if (!INVOICE_ID.test(invoiceId)) throw new PayPalError("rejected", null, "INVALID_INVOICE_ID", null);

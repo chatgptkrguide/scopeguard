@@ -61,3 +61,11 @@ export const SENT_LIKE: ReadonlySet<PayPalInvoiceStatus> = new Set([
   "MARKED_AS_PAID",
   "SHARED",
 ]);
+
+// Paid in full: the client paid (PAID) or the freelancer recorded the whole payment in PayPal (MARKED_AS_PAID, PM
+// decision [D1]). Only these move a change order to paid.
+export const SETTLED: ReadonlySet<PayPalInvoiceStatus> = new Set(["PAID", "MARKED_AS_PAID"]);
+
+// Money is moving but the invoice isn't paid in full yet: the order stays sent. PayPal sends its "paid" webhook for
+// these too ("paid, partially paid, or payment is made and is pending").
+export const PAYMENT_UNDER_WAY: ReadonlySet<PayPalInvoiceStatus> = new Set(["PARTIALLY_PAID", "PAYMENT_PENDING"]);

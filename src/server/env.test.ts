@@ -31,4 +31,12 @@ describe("환경변수 검증", () => {
     const env = parseEnv({ PAYPAL_ENV: "live", PAYPAL_CLIENT_ID: "id", PAYPAL_CLIENT_SECRET: "secret", PAYPAL_WEBHOOK_ID: "wh" });
     expect(env.PAYPAL_ENV).toBe("live");
   });
+
+  it("PAYPAL_WEBHOOK_ID에 영문·숫자 말고 다른 글자가 있으면 env 검사가 거부한다", () => {
+    for (const id of ["WEBHOOK_ID", "8PT5 97110X", "8PT597110X-687430", "A".repeat(51)]) {
+      expect(() => parseEnv({ PAYPAL_WEBHOOK_ID: id }), id).toThrow();
+    }
+    expect(parseEnv({ PAYPAL_WEBHOOK_ID: "8PT597110X687430LKGECATA" }).PAYPAL_WEBHOOK_ID).toBe("8PT597110X687430LKGECATA");
+    expect(parseEnv({ PAYPAL_WEBHOOK_ID: "" }).PAYPAL_WEBHOOK_ID).toBeUndefined();
+  });
 });

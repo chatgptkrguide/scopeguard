@@ -10,7 +10,9 @@ const schema = z
     PAYPAL_ENV: z.preprocess(emptyToUndefined, z.enum(["sandbox", "live"]).default("sandbox")),
     PAYPAL_CLIENT_ID: optional,
     PAYPAL_CLIENT_SECRET: optional,
-    PAYPAL_WEBHOOK_ID: optional,
+    // PayPal's schema allows letters and digits only; a typo would make every webhook fail verification, so the
+    // server refuses to start instead.
+    PAYPAL_WEBHOOK_ID: z.preprocess(emptyToUndefined, z.string().regex(/^[A-Za-z0-9]{1,50}$/).optional()),
     ANTHROPIC_API_KEY: optional,
   })
   .superRefine((env, ctx) => {

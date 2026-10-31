@@ -29,6 +29,13 @@
       "when": 1793414462703,
       "tag": "0003_activity_and_send_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793419977612,
+      "tag": "0004_send_log_and_webhook_outcome",
+      "breakpoints": true
     }
   ]
 }

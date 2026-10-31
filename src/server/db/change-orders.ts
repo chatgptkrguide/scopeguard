@@ -1,6 +1,7 @@
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import type { BillingActionResult } from "../../domain/action-result";
 import { canTransition } from "../../domain/change-order";
+import type { PaymentOrder } from "../../domain/payment";
 import type { ChangeOrderStatus } from "../../domain/types";
 import type { Db } from "./client";
 import { changeOrders, projects } from "./schema";
@@ -177,4 +178,49 @@ export function markCancelled(db: Db, ownerProjectId: string, changeOrderId: str
     .update(changeOrders)
     .set({ status: "cancelled" })
     .where(and(owned(ownerProjectId, changeOrderId), eq(changeOrders.status, "sent")));
+}
+
+// What settling a payment needs: the order's status, amount and invoice id, and where it lives.
+export interface PayableOrder extends PaymentOrder {
+  projectId: string;
+  sentAt: string | null;
+}
+
+const payableColumns = {
+  id: changeOrders.id,
+  status: changeOrders.status,
+  amountCents: changeOrders.amountCents,
+  paypalInvoiceId: changeOrders.paypalInvoiceId,
+  projectId: changeOrders.projectId,
+  sentAt: changeOrders.sentAt,
+};
+
+// Webhook only: any copy. paypal_invoice_id is UNIQUE, so at most one order matches.
+export async function findOrderByInvoiceId(db: Db, invoiceId: string): Promise<PayableOrder | null> {
+  const [row] = await db.select(payableColumns).from(changeOrders).where(eq(changeOrders.paypalInvoiceId, invoiceId));
+  return row ?? null;
+}
+
+// "Check payment": only through the owner's project id.
+export async function readPayableOrder(db: Db, ownerProjectId: string, changeOrderId: string): Promise<PayableOrder | null> {
+  const [row] = await db.select(payableColumns).from(changeOrders).where(owned(ownerProjectId, changeOrderId));
+  return row ?? null;
+}
+
+// sent → paid for this invoice. paid_at = max(?, sent_at), so the CHECK (paid_at >= sent_at) holds even if the
+// server clock went back.
+export function markPaid(db: Db, order: Pick<PayableOrder, "id" | "projectId">, invoiceId: string, paidAt: string) {
+  return db
+    .update(changeOrders)
+    .set({ status: "paid", paidAt: sql`max(${paidAt}, ${changeOrders.sentAt})` })
+    .where(and(owned(order.projectId, order.id), eq(changeOrders.status, "sent"), eq(changeOrders.paypalInvoiceId, invoiceId)));
+}
+
+// draft → sent → paid in one UPDATE, for a draft that already holds this invoice id: the app stopped between sending
+// and saving sent, and the client paid. Clears the send claim; keeps a payer link already stored.
+export function markPaidFromDraft(db: Db, order: Pick<PayableOrder, "id" | "projectId">, invoiceId: string, at: string, payerViewUrl: string | null) {
+  return db
+    .update(changeOrders)
+    .set({ status: "paid", sentAt: at, paidAt: at, payerViewUrl: sql`coalesce(${changeOrders.payerViewUrl}, ${payerViewUrl})`, sendClaimedAt: null })
+    .where(and(owned(order.projectId, order.id), eq(changeOrders.status, "draft"), eq(changeOrders.paypalInvoiceId, invoiceId)));
 }

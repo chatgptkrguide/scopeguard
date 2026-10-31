@@ -153,3 +153,58 @@ export function fakeFetch(script: Readonly<Record<string, FakeReply | readonly F
   };
   return { fetch, calls, to: (key: string) => calls.filter((c) => `${c.method} ${new URL(c.url).pathname}` === key) };
 }
+
+// Webhooks (P3 design note §1.1–1.2). The signature header values are stand-ins in the shape PayPal documents.
+export const WEBHOOK_ID = "8PT597110X687430LKGECATA"; // a stand-in in the registered id's shape (letters and digits)
+export const EVENT_ID = "WH-58D329510W468432D-8HN650336L201105X";
+
+export const signatureHeaders = {
+  "paypal-auth-algo": "SHA256withRSA",
+  "paypal-cert-url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-360caa42-fca2a594-a5cafa77",
+  "paypal-transmission-id": "dfb3be00-b6f1-11f0-9c34-0d4b0c4e1f7a",
+  "paypal-transmission-sig": "stand+in/signature==QmFzZTY0IHNpZ25hdHVyZSBzdGFuZC1pbg==",
+  "paypal-transmission-time": "2026-11-01T09:00:05Z",
+} as const;
+
+// INVOICING.INVOICE.PAID as the Invoicing webhook guide shows it: the invoice is `resource` itself. `nested` puts it
+// under resource.invoice instead (the older shape), since the sandbox payload isn't confirmed yet.
+export function paidEvent(invoiceId: string, changeOrderId: string, options: { id?: string; type?: string; nested?: boolean; status?: string } = {}) {
+  const invoiceResource = {
+    id: invoiceId,
+    status: options.status ?? "PAID",
+    detail: { reference: changeOrderId, invoice_number: "TG-4ILUBN7LCCN6SKDSN5C15S", currency_code: "USD" },
+    primary_recipients: [{ billing_info: { business_name: "Harbor & Pine Coffee", email_address: "maya@harborandpine.example" } }],
+    amount: { currency_code: "USD", value: "650.00" },
+    payments: { paid_amount: { currency_code: "USD", value: "650.00" } },
+  };
+  return {
+    id: options.id ?? EVENT_ID,
+    event_version: "1.0",
+    create_time: "2026-11-01T09:00:00.000Z",
+    resource_type: "invoices",
+    resource_version: "1.0",
+    event_type: options.type ?? "INVOICING.INVOICE.PAID",
+    summary: "An invoice was paid",
+    resource: options.nested ? { invoice: invoiceResource } : invoiceResource,
+    links: [{ href: `https://api.sandbox.paypal.com/v1/notifications/webhooks-events/${options.id ?? EVENT_ID}`, rel: "self", method: "GET" }],
+  };
+}
+
+// POST /v1/notifications/verify-webhook-signature
+export const verifySuccess = { verification_status: "SUCCESS" };
+export const verifyFailure = { verification_status: "FAILURE" }; // a bad signature with a well-formed webhook id (200)
+// A webhook id with a character outside ^[a-zA-Z0-9]+$ (the simulator's "WEBHOOK_ID") → 400
+export const verifyInvalidRequest = {
+  name: "INVALID_REQUEST",
+  message: "Request is not well-formed, syntactically incorrect, or violates schema.",
+  debug_id: "ca52fb42a5f00",
+  details: [{ field: "/webhook_id", value: "WEBHOOK_ID", location: "body", issue: 'must match "^[a-zA-Z0-9]+$"' }],
+};
+// No webhook_event → 400, in a different shape
+export const verifyValidationError = {
+  name: "VALIDATION_ERROR",
+  message: "Invalid request - see details",
+  debug_id: "ca52fb42bee68",
+  information_link: "https://developer.paypal.com/docs/api/webhooks/#errors",
+  details: [{ field: "webhook_event", location: "body", issue: "Required field cannot be blank" }],
+};

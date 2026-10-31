@@ -194,3 +194,102 @@ describe("마이그레이션 0003(활동 기록·발송 표시)", () => {
     expect(await db.all(sql`PRAGMA foreign_key_check`)).toEqual([]);
   });
 });
+
+// Migration 0004 adds the send log table and three webhook_events columns (P3). It must apply on top of a database
+// that already has copies, orders, activity and handled webhook events, without rebuilding or dropping a table.
+describe("마이그레이션 0004(발송 기록 표·웹훅 결과 열)", () => {
+  let db: Db;
+  let before0004: string;
+
+  const journal = JSON.parse(readFileSync(join(MIGRATIONS, "meta/_journal.json"), "utf8")) as Journal;
+  const tag0004 = journal.entries[4]?.tag ?? "";
+
+  beforeEach(() => {
+    db = createDb(":memory:");
+    before0004 = firstMigrations(4);
+  });
+
+  afterEach(() => {
+    rmSync(before0004, { recursive: true, force: true });
+  });
+
+  // Raw SQL with the columns that existed after 0003: a copy with a paid order, a sent one, activity and an event.
+  async function insertRowsBefore0004(): Promise<void> {
+    const at = "2026-10-31T12:00:00.000Z";
+    await db.run(sql`
+      INSERT INTO projects (id, client_name, client_email, title, hourly_rate_cents, hours_per_day, agreed_on, due_on, created_at, last_seen_at)
+      VALUES ('v_kept', 'Harbor & Pine Coffee', 'maya@harborandpine.example', 'Online ordering site', 5000, 6, '2026-10-21', '2026-11-15', ${at}, ${at})
+    `);
+    await db.run(sql`INSERT INTO messages (id, project_id, from_party, author, sent_at, body) VALUES ('m1', 'v_kept', 'client', 'Maya', ${at}, 'Could you add gift cards and a loyalty page?')`);
+    await db.run(sql`
+      INSERT INTO findings (id, message_id, quote, quote_start, quote_end, title, estimated_hours, reason)
+      VALUES ('f1', 'm1', 'gift cards', 14, 24, 'Gift card page', 5, 'r'), ('f2', 'm1', 'a loyalty page', 29, 43, 'Loyalty page', 13, 'r')
+    `);
+    await db.run(sql`
+      INSERT INTO change_orders (id, project_id, finding_id, title, hours, amount_cents, extra_days, status, paypal_invoice_id, payer_view_url, sent_at, paid_at, send_claimed_at)
+      VALUES ('c1', 'v_kept', 'f1', 'Gift card page', 5, 25000, 1, 'paid', NULL, NULL, '2026-10-24T16:00:00Z', '2026-10-26T10:00:00Z', NULL),
+             ('c2', 'v_kept', 'f2', 'Loyalty page', 13, 65000, 3, 'sent', 'INV2-AAAA-BBBB-CCCC-DDDD', NULL, '2026-10-31T11:00:00Z', NULL, NULL)
+    `);
+    await db.run(sql`
+      INSERT INTO activity_events (project_id, change_order_id, kind, actor, summary, detail, at)
+      VALUES ('v_kept', 'c2', 'invoice_sent', 'paypal', 'Sent invoice', '{"invoiceId":"INV2-AAAA-BBBB-CCCC-DDDD"}', ${at})
+    `);
+    await db.run(sql`INSERT INTO webhook_events (id, event_type, received_at, processed_at) VALUES ('WH-OLD-1', 'INVOICING.INVOICE.PAID', ${at}, ${at})`);
+  }
+
+  const TABLES = ["projects", "messages", "findings", "change_orders", "activity_events", "webhook_events"] as const;
+  async function snapshot(): Promise<Record<string, unknown[]>> {
+    const out: Record<string, unknown[]> = {};
+    for (const table of TABLES) {
+      const rows = await db.all<Record<string, unknown>>(sql.raw(`SELECT * FROM ${table} ORDER BY id`));
+      // Compare only the columns that existed before 0004.
+      out[table] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => !["invoice_id", "outcome", "event_created_at"].includes(column))));
+    }
+    return out;
+  }
+
+  it("0004 SQL에는 표 재구성(__new_)이나 DROP이 없고 표 하나·색인 하나·열 추가 세 줄뿐이다", () => {
+    const migration = readFileSync(join(MIGRATIONS, `${tag0004}.sql`), "utf8");
+    const statements = migration.split("--> statement-breakpoint").map((s) => s.trim());
+
+    expect(tag0004).toBe("0004_send_log_and_webhook_outcome");
+    expect(migration).not.toMatch(/__new_|DROP|RENAME|PRAGMA|DELETE|UPDATE/i);
+    expect(statements).toHaveLength(5);
+    expect(statements[0]).toMatch(/^CREATE TABLE `paypal_sends`/);
+    expect(statements[1]).toBe("CREATE INDEX `paypal_sends_at_idx` ON `paypal_sends` (`at`);");
+    expect(statements.slice(2)).toEqual([
+      "ALTER TABLE `webhook_events` ADD `invoice_id` text;",
+      "ALTER TABLE `webhook_events` ADD `outcome` text;",
+      "ALTER TABLE `webhook_events` ADD `event_created_at` text;",
+    ]);
+  });
+
+  it("0003까지 적용되고 행이 있는 DB에 0004를 적용해도 기존 행을 지우거나 바꾸지 않는다", async () => {
+    await runMigrations(db, before0004);
+    await insertRowsBefore0004();
+    const kept = await snapshot();
+
+    await runMigrations(db, MIGRATIONS);
+
+    expect(await snapshot()).toEqual(kept);
+    expect(kept.change_orders).toHaveLength(2);
+    expect(kept.webhook_events).toHaveLength(1);
+    expect(await db.all(sql`PRAGMA foreign_key_check`)).toEqual([]);
+  });
+
+  it("0004 뒤 기존 웹훅 기록의 새 열은 NULL이고, 발송 기록 표는 비어 있으며 바로 쓸 수 있다", async () => {
+    await runMigrations(db, before0004);
+    await insertRowsBefore0004();
+
+    await runMigrations(db, MIGRATIONS);
+
+    expect(await db.all(sql`SELECT id, invoice_id, outcome, event_created_at FROM webhook_events`)).toEqual([
+      { id: "WH-OLD-1", invoice_id: null, outcome: null, event_created_at: null },
+    ]);
+    expect(await db.all(sql`SELECT count(*) AS n FROM paypal_sends`)).toEqual([{ n: 0 }]);
+    await db.run(sql`INSERT INTO paypal_sends (change_order_id, at) VALUES ('c2', '2026-11-01T09:00:00.000Z')`);
+    expect(await db.all(sql`SELECT change_order_id, at FROM paypal_sends`)).toEqual([{ change_order_id: "c2", at: "2026-11-01T09:00:00.000Z" }]);
+    const indexes = await db.all<{ name: string }>(sql`PRAGMA index_list(paypal_sends)`);
+    expect(indexes.map((i) => i.name)).toContain("paypal_sends_at_idx");
+  });
+});

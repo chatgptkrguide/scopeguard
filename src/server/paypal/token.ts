@@ -29,7 +29,8 @@ export function paypalConfig(source: Env = env()): PayPalConfig | null {
 export interface PayPalRequest {
   method: "GET" | "POST" | "DELETE";
   path: string; // after baseUrl, e.g. "/v2/invoicing/invoices"
-  body?: unknown; // sent as JSON
+  body?: unknown; // sent as JSON.stringify(body)
+  rawBody?: string; // sent byte for byte (already JSON). Never together with `body`.
   headers?: Readonly<Record<string, string>>; // PayPal-Request-Id, Prefer
 }
 
@@ -45,6 +46,8 @@ export interface PayPalClient {
   // Returns 2xx answers and the error statuses listed in `expect` (e.g. 422, which the invoice calls
   // read by issue name). Every other status throws a PayPalError.
   request(req: PayPalRequest, expect?: readonly number[]): Promise<PayPalResponse>;
+  // Gets an access token (or reuses the cached one). Throws a PayPalError as request() does. Used by /api/health.
+  checkToken(): Promise<void>;
 }
 
 export interface PayPalClientOptions {
@@ -132,17 +135,18 @@ export function createPayPalClient(config: PayPalConfig, options: PayPalClientOp
   }
 
   function call(req: PayPalRequest, token: string): Promise<RawResponse> {
+    if (req.body !== undefined && req.rawBody !== undefined) throw new TypeError("a PayPal request takes body or rawBody, not both");
+    const body = req.rawBody ?? (req.body === undefined ? undefined : JSON.stringify(req.body));
     const headers: Record<string, string> = { ...req.headers, Authorization: `Bearer ${token}`, Accept: "application/json" };
-    if (req.body !== undefined) headers["Content-Type"] = "application/json";
-    return exchange(`${config.baseUrl}${req.path}`, {
-      method: req.method,
-      headers,
-      body: req.body === undefined ? undefined : JSON.stringify(req.body),
-    });
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    return exchange(`${config.baseUrl}${req.path}`, { method: req.method, headers, body });
   }
 
   return {
     environment: config.environment,
+    async checkToken() {
+      await accessToken();
+    },
     async request(req, expect = []) {
       let token = await accessToken();
       let res = await call(req, token);
