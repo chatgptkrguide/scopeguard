@@ -40,6 +40,7 @@ const noteLine: Record<ChangeOrderStatus, string> = {
 const notCounted = (status: ChangeOrderStatus) => status === "waived" || status === "cancelled";
 
 const noteId = (order: ChangeOrder) => `note-${order.id}`;
+const statusLineId = (order: ChangeOrder) => `status-${order.id}`;
 
 function statusLine(order: ChangeOrder): string {
   return order.status === "paid" && order.paidAt ? `${statusText.paid} ${formatShortDate(order.paidAt)}` : statusText[order.status];
@@ -185,18 +186,23 @@ function MarginNote({ reason, order, sendBlockedReason }: MarginNoteProps) {
       data-change-order-id={order.id}
       data-status={order.status}
     >
-      <p className={`text-sm font-semibold ${statusColor[order.status]}`}>{open ? "Not in the agreed scope" : statusLine(order)}</p>
+      {/* Takes focus after a waive (the buttons are gone), and announces the new status. */}
+      <p id={statusLineId(order)} role="status" tabIndex={-1} className={`text-sm font-semibold ${statusColor[order.status]}`}>
+        {open ? "Not in the agreed scope" : statusLine(order)}
+      </p>
       <p className="mt-1 font-serif text-[17px] leading-snug">{order.title}</p>
       <p className="mt-1 tabular-nums">
         <span className="font-semibold">+{formatUsd(order.amountCents)}</span>
         <span className="ml-2 text-sm text-ink-soft">{moreDays(order.extraDays)}</span>
       </p>
-      {open && (
-        <>
-          <p className="mt-3 text-sm leading-relaxed text-ink-soft">{reason}</p>
-          <ChangeOrderActions order={{ id: order.id, status: order.status }} sendBlockedReason={sendBlockedReason} />
-        </>
-      )}
+      {open && <p className="mt-3 text-sm leading-relaxed text-ink-soft">{reason}</p>}
+      {/* Rendered for every status (it draws nothing once settled), so it stays mounted through the refresh
+          after a waive and can move focus to the status line. */}
+      <ChangeOrderActions
+        order={{ id: order.id, status: order.status }}
+        sendBlockedReason={sendBlockedReason}
+        statusLineId={statusLineId(order)}
+      />
     </aside>
   );
 }

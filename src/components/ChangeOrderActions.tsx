@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useId, useRef, useState } from "react";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { waiveChangeOrder } from "@/app/actions";
 import type { ActionError } from "@/domain/action-result";
@@ -9,6 +9,7 @@ import type { ChangeOrder } from "@/domain/types";
 export interface ChangeOrderActionsProps {
   order: Pick<ChangeOrder, "id" | "status">;
   sendBlockedReason: string | null; // why sending is off; null once PayPal is connected (P2)
+  statusLineId: string; // the note's status line (role="status", tabIndex -1), focused after a waive
 }
 
 const errorText: Record<ActionError, string> = {
@@ -19,7 +20,7 @@ const errorText: Record<ActionError, string> = {
 };
 
 // The buttons under an open change order. The browser sends only the order id; the server decides the rest.
-export function ChangeOrderActions({ order, sendBlockedReason }: ChangeOrderActionsProps) {
+export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: ChangeOrderActionsProps) {
   const [state, waiveAction, pending] = useActionState(waiveChangeOrder, null);
   // Waived is final, so taking the charge off asks once more before anything reaches the server (D-015).
   const [confirming, setConfirming] = useState(false);
@@ -27,6 +28,13 @@ export function ChangeOrderActions({ order, sendBlockedReason }: ChangeOrderActi
   const keepRef = useRef<HTMLButtonElement>(null);
   const reasonId = useId();
   const confirmId = useId();
+
+  // A waive removes these buttons, which held focus. Moving it to the status line keeps the keyboard
+  // in the note, and the screen reader reads the new status ("Included at no charge").
+  useEffect(() => {
+    if (state?.ok) document.getElementById(statusLineId)?.focus();
+  }, [state, statusLineId]);
+
   if (order.status !== "draft") return null;
 
   // The pressed button is replaced, so focus moves to the one in its place. "Keep the charge" takes the
