@@ -118,7 +118,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
         </p>
       )}
       {state && !state.ok && (
-        <p role="alert" className="mt-2 text-sm font-semibold text-mark">
+        <p role="alert" className="mt-2 border-l-2 border-mark pl-3 text-sm font-semibold text-ink">
           {errorText[state.error]}
         </p>
       )}

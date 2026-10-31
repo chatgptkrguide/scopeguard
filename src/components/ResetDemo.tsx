@@ -39,7 +39,7 @@ export function ResetDemo({ projectId }: ResetDemoProps) {
         {progress}
       </p>
       {state && !state.ok && (
-        <p role="alert" className="text-sm font-semibold text-mark">
+        <p role="alert" className="border-l-2 border-mark pl-3 text-sm font-semibold text-ink">
           {errorText[state.error]}
         </p>
       )}
