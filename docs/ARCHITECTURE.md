@@ -2,6 +2,17 @@
 
 This document is the plan the code follows. When the code and this file disagree, fix one of them in the same commit.
 
+**Build status.** The sections below describe the whole design. This table says what exists today; anything not listed as built arrives in the phase shown.
+
+| Area | Status |
+|:--|:--|
+| Visitor demo copies, workspace from the database, waive and reset (phase 1) | Built |
+| PayPal invoices: create, send, cancel, quote again, activity events, server-wide send cap (phase 2) | Built |
+| Payment webhook, "Check payment", startup migrations, `/api/health`, daily check, Render deploy (phase 3) | Planned |
+| Claude scope review, Claude call caps, activity panel on screen (phase 4) | Planned |
+| Per-copy limits and public demo polish (phase 5) | Planned |
+| Payment-locked timeline with Bryntum (phase 6, only if phase 5 passes its go/no-go check) | Planned |
+
 ## 1. Product in one paragraph
 
 Freelancers agree on a scope with a client, then the client keeps adding requests in chat and email. Tollgate compares each new client message with the agreed scope, marks the phrases that add work, and proposes a change order priced from the freelancer's own hourly rate. The freelancer approves it, Tollgate sends a PayPal invoice, and a PayPal webhook marks it paid. Extra work stays locked on a timeline until its change order is paid; the payment webhook unlocks it and moves the delivery date.
@@ -151,7 +162,7 @@ docs/                       this file
 
 ## 10. Deployment
 
-Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations will run when the app starts (added with the first deploy), not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime. Render deploys the `deploy` branch with auto-deploy off; every deploy is started by hand. From the first deploy on, each phase that changes product code deploys its candidate commit, checks the live app, and either moves `deploy` to the new passing tag or rolls back to the last deployed passing tag (the very first deploy has nothing to roll back to, so its fix is redeployed); during judging (Dec 1–15, 2026) only outage fixes are deployed. `/api/health` checks the database and a PayPal token, and a daily check alerts the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
+Render web service on the Starter plan with a 1 GB persistent disk for the SQLite file, paid from the hackathon's Render credit (free web services can't attach a disk). The disk is mounted only at runtime, so migrations will run when the app starts (added with the first deploy), not at build or pre-deploy. With a disk attached, Render stops the old instance before starting the new one, so every deploy has a few seconds of downtime. Render deploys the `deploy` branch with auto-deploy off; every deploy is started by hand. From the first deploy on, each phase that changes product code deploys its candidate commit, checks the live app, and either moves `deploy` to the new passing tag or rolls back to the last deployed passing tag (the very first deploy has nothing to roll back to, so its fix is redeployed); during judging (Dec 1–15, 2026) only outage fixes are deployed. From phase 3, `/api/health` will check the database and a PayPal token, and a daily check will alert the maintainer when it fails. The demo, sandbox credentials, Anthropic balance, and Bryntum trial must all last through judging. Fallback: Vercel with a hosted libSQL database.
 
 ## 11. Decisions
 
