@@ -41,4 +41,11 @@ describe("Render 배포 설정 (render.yaml)", () => {
     expect(setting("buildCommand")).toBe("pnpm install --frozen-lockfile && pnpm build");
     expect(setting("plan")).toBe("0.5c-512mb");
   });
+
+  it("render.yaml은 Node 버전을 NODE_VERSION으로 .nvmrc와 같은 20에 고정한다", () => {
+    const nvmrc = readFileSync(".nvmrc", "utf8").trim();
+
+    expect(envEntry("NODE_VERSION")).toEqual(["- key: NODE_VERSION", 'value: "20"']);
+    expect(nvmrc).toBe("20");
+  });
 });

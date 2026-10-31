@@ -16,6 +16,8 @@ services:
       mountPath: /var/data
       sizeGB: 1
     envVars:
+      - key: NODE_VERSION
+        value: "20" # same as .nvmrc; Render reads this before .nvmrc, and its default is newer (P3-C5)
       - key: PAYPAL_ENV
         value: sandbox # the app refuses to start on Render with anything else
       - key: DATABASE_URL
