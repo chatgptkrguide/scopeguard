@@ -19,6 +19,12 @@ const errorText: Record<ActionError, string> = {
   server_error: "This couldn't be saved just now. Nothing changed; try again.",
 };
 
+// Pressing shows a color change; a disabled (aria-disabled) button shows none and takes palette colors.
+const PRIMARY =
+  "min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet not-aria-disabled:hover:bg-mark not-aria-disabled:active:bg-ink-soft aria-disabled:bg-rule aria-disabled:text-ink-soft";
+const SECONDARY =
+  "min-h-11 rounded-md border border-rule bg-sheet px-3 text-sm font-semibold text-ink-soft not-aria-disabled:hover:border-ink-soft not-aria-disabled:hover:text-ink not-aria-disabled:active:bg-paper aria-disabled:cursor-wait";
+
 // The buttons under an open change order. The browser sends only the order id; the server decides the rest.
 export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: ChangeOrderActionsProps) {
   const [state, waiveAction, pending] = useActionState(waiveChangeOrder, null);
@@ -56,7 +62,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
           type="button"
           aria-disabled={sendBlockedReason ? true : undefined}
           aria-describedby={sendBlockedReason ? reasonId : undefined}
-          className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-not-allowed aria-disabled:bg-rule aria-disabled:text-ink-soft"
+          className={`${PRIMARY} aria-disabled:cursor-not-allowed`}
         >
           Send change order
         </button>
@@ -71,7 +77,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
                 onClick={pending ? undefined : keepCharge}
                 aria-disabled={pending || undefined}
                 aria-describedby={confirmId}
-                className="min-h-11 rounded-md px-3 text-sm font-semibold text-ink-soft hover:text-ink"
+                className={SECONDARY}
               >
                 Keep the charge
               </button>
@@ -83,7 +89,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
                 onClick={(event) => {
                   if (pending) event.preventDefault(); // no second submit while the first is saving
                 }}
-                className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-wait aria-disabled:bg-rule aria-disabled:text-ink-soft"
+                className={`${PRIMARY} aria-disabled:cursor-wait`}
               >
                 Confirm: include at no charge
               </button>
@@ -94,7 +100,7 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
               ref={includeRef}
               type="button"
               onClick={askToConfirm}
-              className="min-h-11 rounded-md px-3 text-sm font-semibold text-ink-soft hover:text-ink"
+              className={SECONDARY}
             >
               Include at no charge
             </button>

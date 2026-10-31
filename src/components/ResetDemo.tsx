@@ -30,7 +30,7 @@ export function ResetDemo({ projectId }: ResetDemoProps) {
         onClick={(event) => {
           if (pending) event.preventDefault(); // no second reset while the first is running
         }}
-        className="min-h-11 rounded-md border border-rule bg-sheet px-3 text-sm font-semibold text-ink-soft hover:border-ink-soft hover:text-ink aria-disabled:cursor-wait"
+        className="min-h-11 rounded-md border border-rule bg-sheet px-3 text-sm font-semibold text-ink-soft not-aria-disabled:hover:border-ink-soft not-aria-disabled:hover:text-ink not-aria-disabled:active:bg-paper aria-disabled:cursor-wait"
       >
         Reset demo
       </button>
