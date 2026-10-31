@@ -66,9 +66,12 @@ export const SENT_LIKE: ReadonlySet<PayPalInvoiceStatus> = new Set([
 // decision [D1]). Only these move a change order to paid.
 export const SETTLED: ReadonlySet<PayPalInvoiceStatus> = new Set(["PAID", "MARKED_AS_PAID"]);
 
-// Money is moving but the invoice isn't paid in full yet: the order stays sent. PayPal sends its "paid" webhook for
-// these too ("paid, partially paid, or payment is made and is pending").
-export const PAYMENT_UNDER_WAY: ReadonlySet<PayPalInvoiceStatus> = new Set(["PARTIALLY_PAID", "PAYMENT_PENDING"]);
+// Not paid in full yet, but PayPal may still show it paid in full without another event: a "paid" webhook read back
+// before PayPal's invoice caught up (SENT, UNPAID), or a payment that is made and pending. PayPal sends its "paid"
+// webhook for pending payments too ("paid, partially paid, or payment is made and is pending") and doesn't promise a
+// new event when the payment clears, so the webhook asks PayPal to send the same event again (P3-S2). A partly paid
+// invoice isn't here: the payment that completes it comes with its own event.
+export const PAYMENT_AWAITED: ReadonlySet<PayPalInvoiceStatus> = new Set(["SENT", "UNPAID", "SHARED", "PAYMENT_PENDING"]);
 
 // The only currency the app invoices in (invoices.ts makes every invoice in USD).
 export const INVOICE_CURRENCY = "USD";

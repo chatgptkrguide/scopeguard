@@ -1,4 +1,4 @@
-import { INVOICE_CURRENCY, PAYMENT_UNDER_WAY, SETTLED, type PayPalInvoiceStatus } from "./invoice";
+import { INVOICE_CURRENCY, PAYMENT_AWAITED, SETTLED, type PayPalInvoiceStatus } from "./invoice";
 import { toPayPalValue } from "./money";
 import type { ChangeOrderStatus } from "./types";
 
@@ -40,7 +40,7 @@ export function paymentPrecheck(order: PaymentOrder): PaymentPrecheck {
 
 export type PaymentDecision =
   | { kind: "settle"; from: "sent" | "draft" } // draft: recorded as sent, then paid
-  | { kind: "not_settled"; underWay: boolean } // underWay: partly paid or pending
+  | { kind: "not_settled"; awaited: boolean } // awaited: PayPal may still show it paid in full (PAYMENT_AWAITED)
   | { kind: "mismatch" }; // the invoice's reference isn't this order's id, or its amount or currency isn't the order's
 
 // Only for an order paymentPrecheck answered "read" for. The reference, amount and currency are checked first: an
@@ -50,5 +50,5 @@ export function paymentDecision(order: PaymentOrder, invoice: InvoiceFacts): Pay
   const samePrice = invoice.amountValue === toPayPalValue(order.amountCents) && invoice.currencyCode === INVOICE_CURRENCY;
   if (invoice.reference !== order.id || !samePrice) return { kind: "mismatch" };
   if (SETTLED.has(invoice.status)) return { kind: "settle", from: order.status === "draft" ? "draft" : "sent" };
-  return { kind: "not_settled", underWay: PAYMENT_UNDER_WAY.has(invoice.status) };
+  return { kind: "not_settled", awaited: PAYMENT_AWAITED.has(invoice.status) };
 }

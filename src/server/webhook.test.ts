@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EVENT_ID,
   INVOICE_ID,
@@ -21,11 +21,39 @@ import { PayPalError } from "./paypal/errors";
 import type { InvoiceView } from "./paypal/invoices";
 import { createPayPalClient, paypalConfig } from "./paypal/token";
 import { verificationBody, verifyWebhookSignature, type Verification, type WebhookHeaders } from "./paypal/webhooks";
-import { invoiceIdFromEvent, readBodyWithin, receivePayPalWebhook, type VerifyLimit, type WebhookDeps, type WebhookVerifier } from "./webhook";
+import {
+  BODY_TIMEOUT_MS,
+  invoiceIdFromEvent,
+  readBodyWithin,
+  receivePayPalWebhook,
+  senderOf,
+  type SenderLimit,
+  type VerifyLimit,
+  type WebhookDeps,
+  type WebhookVerifier,
+} from "./webhook";
 
 const EVENT_TIME = new Date("2026-11-01T09:00:00.000Z"); // paidEvent's create_time
 const RECEIVED = new Date(EVENT_TIME.getTime() + 5000);
 const URL = "https://tollgate.example/api/webhooks/paypal";
+// Documentation addresses (RFC 5737): one stands for PayPal's webhook sender, the other for a forger.
+const PAYPAL_IP = "192.0.2.10";
+const FORGER_IP = "198.51.100.7";
+
+// A body that sends its first bytes and then nothing more, and says when it is cancelled.
+function stalledBody() {
+  const state = { cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"id":'));
+    },
+    pull: () => new Promise<void>(() => {}),
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { stream, state };
+}
 
 function webhookRequest(body: string, headers: Readonly<Record<string, string>> = signatureHeaders): Request {
   return new Request(URL, { method: "POST", body, headers: { "content-type": "application/json", ...headers } });
@@ -84,6 +112,10 @@ describe("PayPal 결제 웹훅", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // The loyalty-page order, sent with INVOICE_ID ($650).
@@ -191,23 +223,36 @@ describe("PayPal 결제 웹훅", () => {
     expect(await events()).toMatchObject([{ id: EVENT_ID, invoiceId: "INV2-ZZZZ-YYYY-XXXX-WWWW", outcome: "unknown_invoice" }]);
   });
 
-  it("청구서가 PARTIALLY_PAID나 PAYMENT_PENDING이면 sent를 유지하고 이벤트만 not_settled로 기록한다", async () => {
+  it("청구서가 PARTIALLY_PAID·CANCELLED·REFUNDED면 sent를 유지하고 이벤트를 not_settled로 기록해 200이다", async () => {
     await markSentOrder();
-    const partly = deps({}, async () => invoiceView("PARTIALLY_PAID"));
-    const pending = deps({}, async () => invoiceView("PAYMENT_PENDING"));
+    const statuses = ["PARTIALLY_PAID", "CANCELLED", "REFUNDED"];
 
-    const replies = [
-      await receivePayPalWebhook(partly.deps, webhookRequest(eventBody({ id: "WH-PARTLY-1" }))),
-      await receivePayPalWebhook(pending.deps, webhookRequest(eventBody({ id: "WH-PENDING-1" }))),
-    ];
+    const replies = [];
+    for (const status of statuses) {
+      replies.push(await receivePayPalWebhook(deps({}, async () => invoiceView(status)).deps, webhookRequest(eventBody({ id: `WH-${status}-1` }))));
+    }
 
-    expect(replies).toEqual(Array(2).fill({ status: 200, outcome: "not_settled" }));
+    expect(replies).toEqual(Array(3).fill({ status: 200, outcome: "not_settled" }));
     expect((await order()).status).toBe("sent");
     expect(await kinds()).toEqual([]);
-    expect((await events()).map((e) => [e.id, e.outcome])).toEqual([
-      ["WH-PARTLY-1", "not_settled"],
-      ["WH-PENDING-1", "not_settled"],
-    ]);
+    expect((await events()).map((e) => [e.id, e.outcome])).toEqual(statuses.map((status) => [`WH-${status}-1`, "not_settled"]));
+  });
+
+  it("PAID 이벤트인데 청구서가 아직 SENT·UNPAID·PAYMENT_PENDING이면 기록하지 않고 503과 Retry-After를 돌려줘, 다시 온 같은 이벤트가 정산된다", async () => {
+    await markSentOrder();
+    const lagging = ["SENT", "UNPAID", "PAYMENT_PENDING"].map((status) => deps({}, async () => invoiceView(status)));
+
+    const replies = [];
+    for (const attempt of lagging) replies.push(await receivePayPalWebhook(attempt.deps, webhookRequest(eventBody())));
+    const recorded = await events();
+    const retry = await receivePayPalWebhook(deps().deps, webhookRequest(eventBody()));
+
+    expect(replies).toEqual(Array(3).fill({ status: 503, outcome: "payment_awaited", retryAfterSeconds: 60 }));
+    expect(recorded).toEqual([]);
+    expect(retry).toEqual({ status: 200, outcome: "settled" });
+    expect((await order()).status).toBe("paid");
+    expect(await kinds()).toEqual(["payment_confirmed"]);
+    expect(await events()).toMatchObject([{ id: EVENT_ID, outcome: "settled" }]);
   });
 
   it("청구서 id를 가진 draft의 청구서가 PAID면 sent를 거쳐 paid가 되고 invoice_sent·payment_confirmed가 순서대로 남는다", async () => {
@@ -339,6 +384,38 @@ describe("PayPal 결제 웹훅", () => {
     expect((await events()).map((e) => e.outcome)).toEqual(["mismatch", "mismatch", "mismatch"]);
   });
 
+  it("청구서를 읽는 사이 견적이 취소돼 정산 batch가 주문을 못 바꾸면 paid_not_applied로 기록하고 경고를 남긴다", async () => {
+    await markSentOrder();
+    const { deps: d } = deps({}, async () => {
+      // A cancel saved while PayPal was being read (P3-D1).
+      await db.update(changeOrders).set({ status: "cancelled" }).where(eq(changeOrders.id, orderId));
+      return invoiceView("PAID");
+    });
+
+    const reply = await receivePayPalWebhook(d, webhookRequest(eventBody()));
+
+    expect(reply).toEqual({ status: 200, outcome: "paid_not_applied" });
+    expect((await order()).status).toBe("cancelled");
+    expect(await kinds()).toEqual([]);
+    expect(await events()).toMatchObject([{ id: EVENT_ID, invoiceId: INVOICE_ID, outcome: "paid_not_applied" }]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`PayPal shows invoice ${INVOICE_ID} paid, but its change order is cancelled`));
+  });
+
+  it("청구서를 읽는 사이 결제 확인 버튼이 먼저 paid로 바꿨으면 정산 batch가 0행이어도 settled다", async () => {
+    await markSentOrder();
+    const { deps: d } = deps({}, async () => {
+      await db.update(changeOrders).set({ status: "paid", paidAt: RECEIVED.toISOString() }).where(eq(changeOrders.id, orderId));
+      return invoiceView("PAID");
+    });
+
+    const reply = await receivePayPalWebhook(d, webhookRequest(eventBody()));
+
+    expect(reply).toEqual({ status: 200, outcome: "settled" });
+    expect(await kinds()).toEqual([]);
+    expect(await events()).toMatchObject([{ outcome: "settled" }]);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
   it("같은 이벤트 두 개가 동시에 와도 상태 변화와 payment_confirmed 기록은 한 번이다", async () => {
     await markSentOrder();
     let reads = 0;
@@ -409,19 +486,76 @@ describe("PayPal 결제 웹훅", () => {
     }
   });
 
-  it("서명 확인 호출이 분당 상한을 넘으면 503과 Retry-After를 돌려주고 PayPal을 부르지 않는다", async () => {
+  it("서명 확인 호출이 보낸 곳을 모두 합쳐 분당 상한을 넘으면 503과 Retry-After를 돌려주고 PayPal을 부르지 않는다", async () => {
     await markSentOrder();
+    const senderLimit: SenderLimit = { max: 5, windowMs: 60_000, senders: new Map() };
     const verifyLimit: VerifyLimit = { max: 2, windowMs: 60_000, times: [] };
-    const { deps: d, verify } = deps({ verifyLimit }, async () => invoiceView("SENT"));
+    const { deps: d, verify } = deps({ senderLimit, verifyLimit }, async () => invoiceView("PARTIALLY_PAID"));
+    const from = (i: number) => ({ ...signatureHeaders, "cf-connecting-ip": `203.0.113.${i + 1}` });
 
     const replies = [];
-    for (let i = 0; i < 3; i++) replies.push(await receivePayPalWebhook(d, webhookRequest(eventBody({ id: `WH-FLOOD-${i}` }))));
-    const aMinuteLater = await receivePayPalWebhook({ ...d, now: () => new Date(RECEIVED.getTime() + 60_001) }, webhookRequest(eventBody({ id: "WH-FLOOD-3" })));
+    for (let i = 0; i < 3; i++) replies.push(await receivePayPalWebhook(d, webhookRequest(eventBody({ id: `WH-FLOOD-${i}` }), from(i))));
+    const aMinuteLater = await receivePayPalWebhook({ ...d, now: () => new Date(RECEIVED.getTime() + 60_001) }, webhookRequest(eventBody({ id: "WH-FLOOD-3" }), from(3)));
 
     expect(replies.slice(0, 2)).toEqual(Array(2).fill({ status: 200, outcome: "not_settled" }));
     expect(replies[2]).toEqual({ status: 503, outcome: "busy", retryAfterSeconds: 60 });
     expect(verify.calls.map((c) => JSON.parse(c.rawEvent).id)).toEqual(["WH-FLOOD-0", "WH-FLOOD-1", "WH-FLOOD-3"]);
     expect(aMinuteLater).toEqual({ status: 200, outcome: "not_settled" });
+  });
+
+  it("한 곳에서 온 위조 요청 폭주는 보낸 곳 상한에 먼저 걸려, 다른 곳(PayPal)에서 온 진짜 알림은 처리된다", async () => {
+    await markSentOrder();
+    const senderLimit: SenderLimit = { max: 3, windowMs: 60_000, senders: new Map() };
+    const verifyLimit: VerifyLimit = { max: 5, windowMs: 60_000, times: [] };
+    const verify = fakeVerifier(async () => "verified");
+    // PayPal confirms only its own signature.
+    const verifier: WebhookVerifier = {
+      verify: async (webhookId, headers, rawEvent) =>
+        headers.transmissionSig === signatureHeaders["paypal-transmission-sig"] ? verify.verifier.verify(webhookId, headers, rawEvent) : "unverified",
+    };
+    const { deps: d } = deps({ senderLimit, verifyLimit, verifier });
+    // The forger also writes PayPal's address first in X-Forwarded-For; Cloudflare's header is what counts.
+    const forged = { ...signatureHeaders, "paypal-transmission-sig": "forged", "cf-connecting-ip": FORGER_IP, "x-forwarded-for": `${PAYPAL_IP}, ${FORGER_IP}` };
+
+    const flood = [];
+    for (let i = 0; i < 10; i++) flood.push(await receivePayPalWebhook(d, webhookRequest(eventBody({ id: `WH-FORGED-${i}` }), forged)));
+    const real = await receivePayPalWebhook(d, webhookRequest(eventBody(), { ...signatureHeaders, "cf-connecting-ip": PAYPAL_IP }));
+
+    expect(flood.slice(0, 3)).toEqual(Array(3).fill({ status: 400, outcome: "unverified" }));
+    expect(flood.slice(3)).toEqual(Array(7).fill({ status: 503, outcome: "busy", retryAfterSeconds: 60 }));
+    expect(verifyLimit.times).toHaveLength(4); // three forged, then PayPal's: the forger never reached the server-wide cap
+    expect(real).toEqual({ status: 200, outcome: "settled" });
+    expect((await order()).status).toBe("paid");
+    expect(verify.calls).toHaveLength(1);
+  });
+
+  it("보낸 곳은 CF-Connecting-IP로 가리고, 없으면 X-Forwarded-For 첫 값, 둘 다 없거나 주소 모양이 아니면 하나로 묶는다", () => {
+    const headers = (values: Record<string, string>) => new Headers(values);
+
+    expect(senderOf(headers({ "cf-connecting-ip": PAYPAL_IP, "x-forwarded-for": `${FORGER_IP}, 10.0.0.1` }))).toBe(PAYPAL_IP);
+    expect(senderOf(headers({ "cf-connecting-ip": "2001:db8::1" }))).toBe("2001:db8::1");
+    expect(senderOf(headers({ "x-forwarded-for": ` ${FORGER_IP} , 10.0.0.1` }))).toBe(FORGER_IP);
+    expect(senderOf(headers({}))).toBe("unknown");
+    expect(senderOf(headers({ "cf-connecting-ip": "<script>", "x-forwarded-for": "not an address" }))).toBe("unknown");
+  });
+
+  it("본문이 10초 안에 다 오지 않으면 408이고 읽기를 멈추며 서명 확인을 부르지 않는다", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { deps: d, verify } = deps();
+    const { stream, state } = stalledBody();
+    const request = new Request(URL, { method: "POST", body: stream, headers: signatureHeaders, duplex: "half" } as RequestInit);
+    let answered = false;
+
+    const pending = receivePayPalWebhook(d, request).finally(() => (answered = true));
+    await vi.advanceTimersByTimeAsync(BODY_TIMEOUT_MS - 1);
+    const beforeDeadline = answered;
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(beforeDeadline).toBe(false);
+    expect(await pending).toEqual({ status: 408, outcome: "body_timeout" });
+    expect(state.cancelled).toBe(true);
+    expect(verify.calls).toEqual([]);
+    expect(await events()).toEqual([]);
   });
 
   it("이미 paid인 견적의 이벤트는 PayPal을 부르지 않고 already_paid로 기록한다", async () => {
@@ -495,6 +629,31 @@ describe("PayPal 결제 웹훅", () => {
 });
 
 describe("웹훅 본문 읽기", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("본문 읽기는 BODY_TIMEOUT_MS(10초)를 넘기면 멈추고 timeout이다", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { stream, state } = stalledBody();
+
+    const pending = readBodyWithin(new Request(URL, { method: "POST", body: stream, duplex: "half" } as RequestInit), 64 * 1024);
+    await vi.advanceTimersByTimeAsync(BODY_TIMEOUT_MS);
+
+    expect(BODY_TIMEOUT_MS).toBe(10_000);
+    expect(await pending).toEqual({ ok: false, outcome: "timeout" });
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("제한 시간 안에 끝난 본문은 그대로 읽고 타이머를 남기지 않는다", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const read = await readBodyWithin(new Request(URL, { method: "POST", body: '{"a":1}' }), 64, 50);
+
+    expect(read).toEqual({ ok: true, text: '{"a":1}' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("상한 안의 본문은 그대로 읽는다", async () => {
     const text = '{"a":"é"}';
 

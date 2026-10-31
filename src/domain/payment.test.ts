@@ -14,14 +14,15 @@ describe("결제 정산 판단", () => {
     expect(paymentDecision({ ...sent, status: "draft" }, facts("PAID"))).toEqual({ kind: "settle", from: "draft" });
   });
 
-  it("정산 판단: PARTIALLY_PAID와 PAYMENT_PENDING은 underWay인 not_settled다", () => {
-    expect(paymentDecision(sent, facts("PARTIALLY_PAID"))).toEqual({ kind: "not_settled", underWay: true });
-    expect(paymentDecision(sent, facts("PAYMENT_PENDING"))).toEqual({ kind: "not_settled", underWay: true });
+  it("정산 판단: 아직 결제를 기다리는 SENT·UNPAID·SHARED·PAYMENT_PENDING은 awaited인 not_settled다", () => {
+    for (const status of ["SENT", "UNPAID", "SHARED", "PAYMENT_PENDING"]) {
+      expect(paymentDecision(sent, facts(status)), status).toEqual({ kind: "not_settled", awaited: true });
+    }
   });
 
-  it("정산 판단: SENT·UNPAID·CANCELLED·REFUNDED는 not_settled다", () => {
-    for (const status of ["SENT", "UNPAID", "CANCELLED", "REFUNDED", "PARTIALLY_REFUNDED", "SOMETHING_NEW"]) {
-      expect(paymentDecision(sent, facts(status)), status).toEqual({ kind: "not_settled", underWay: false });
+  it("정산 판단: PARTIALLY_PAID·CANCELLED·REFUNDED·모르는 상태는 기다리지 않는 not_settled다", () => {
+    for (const status of ["PARTIALLY_PAID", "CANCELLED", "REFUNDED", "PARTIALLY_REFUNDED", "SOMETHING_NEW"]) {
+      expect(paymentDecision(sent, facts(status)), status).toEqual({ kind: "not_settled", awaited: false });
     }
   });
 

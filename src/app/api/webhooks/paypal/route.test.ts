@@ -46,6 +46,16 @@ describe("웹훅 라우트 응답", () => {
     expect(await res.json()).toEqual({ error: "busy" });
   });
 
+  it("결제 대기 503에도 Retry-After가 붙고, 본문 시간 초과는 408이다", async () => {
+    handler.reply = async () => ({ status: 503, outcome: "payment_awaited", retryAfterSeconds: 60 });
+    const awaited = await POST(request());
+    handler.reply = async () => ({ status: 408, outcome: "body_timeout" });
+    const slow = await POST(request());
+
+    expect([awaited.status, awaited.headers.get("retry-after"), await awaited.json()]).toEqual([503, "60", { error: "payment_awaited" }]);
+    expect([slow.status, slow.headers.get("retry-after"), await slow.json()]).toEqual([408, null, { error: "body_timeout" }]);
+  });
+
   it("처리 중 예상 못 한 오류가 나면 500 server_error이고 오류 내용을 돌려주지 않는다", async () => {
     handler.reply = async () => Promise.reject(new Error("database is locked at /var/data/tollgate.db"));
 

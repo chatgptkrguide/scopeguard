@@ -24,3 +24,8 @@ export async function hasWebhookEvent(db: Db, id: string): Promise<boolean> {
   const [row] = await db.select({ id: webhookEvents.id }).from(webhookEvents).where(eq(webhookEvents.id, id));
   return row !== undefined;
 }
+
+// Corrects the outcome of an event already recorded, when what its batch did turns out different (P3-C2).
+export async function setWebhookOutcome(db: Db, id: string, outcome: WebhookOutcome): Promise<void> {
+  await db.update(webhookEvents).set({ outcome }).where(eq(webhookEvents.id, id));
+}
