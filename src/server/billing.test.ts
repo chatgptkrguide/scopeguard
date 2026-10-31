@@ -29,7 +29,7 @@ import {
   sentInvoice,
   tokenResponse,
   type FakeReply,
-} from "./paypal/fixtures";
+} from "../../test/paypal-fixtures";
 import type { InvoiceInput, InvoiceView } from "./paypal/invoices";
 import { createPayPalClient, paypalConfig } from "./paypal/token";
 

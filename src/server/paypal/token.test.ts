@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseEnv } from "../env";
 import { PayPalError } from "./errors";
-import { authenticationFailure, fakeFetch, internalServerError, invalidClient, invalidToken, tokenResponse } from "./fixtures";
+import { authenticationFailure, fakeFetch, internalServerError, invalidClient, invalidToken, tokenResponse } from "../../../test/paypal-fixtures";
 import { createPayPalClient, paypalConfig, type PayPalConfig } from "./token";
 
 const CLIENT_ID = "stand-in-client-id";

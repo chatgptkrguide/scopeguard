@@ -26,7 +26,7 @@ import {
   tokenResponse,
   totalAmountNegative,
   type FakeReply,
-} from "./fixtures";
+} from "../../../test/paypal-fixtures";
 import {
   cancelInvoice,
   createInvoice,
