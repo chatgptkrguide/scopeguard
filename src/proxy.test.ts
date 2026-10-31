@@ -36,11 +36,32 @@ describe("방문자 쿠키 발급(proxy)", () => {
     expect(development).toMatch(/;\s*HttpOnly/i);
   });
 
-  it("올바른 쿠키가 있으면 새로 발급하지 않는다", () => {
+  it("올바른 쿠키가 있으면 새 id를 만들지 않고 같은 값으로 다시 설정해 7일을 연장한다", () => {
     const response = proxy(requestWith(`${VISITOR_COOKIE}=${VALID_ID}`));
 
-    expect(response.headers.get("set-cookie")).toBeNull();
-    expect(response.cookies.get(VISITOR_COOKIE)).toBeUndefined();
+    expect(response.cookies.get(VISITOR_COOKIE)).toMatchObject({
+      value: VALID_ID,
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 604800,
+    });
+  });
+
+  it("올바른 쿠키를 다시 설정할 때도 운영 모드에서는 Secure를 붙인다", () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    const header = proxy(requestWith(`${VISITOR_COOKIE}=${VALID_ID}`)).headers.get("set-cookie") ?? "";
+
+    expect(header).toContain(`${VISITOR_COOKIE}=${VALID_ID}`);
+    expect(header).toMatch(/;\s*Secure/i);
+    expect(header).toMatch(/Max-Age=604800/i);
+  });
+
+  it("올바른 쿠키가 있으면 요청 쿠키 헤더를 다시 쓰지 않는다", () => {
+    const response = proxy(requestWith(`${VISITOR_COOKIE}=${VALID_ID}; theme=dark`));
+
+    expect(response.headers.get("x-middleware-request-cookie")).toBeNull();
   });
 
   it("형식이 틀린 쿠키는 새 id로 바꾼다", () => {

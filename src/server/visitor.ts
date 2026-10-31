@@ -1,7 +1,7 @@
 // The demo visitor cookie. proxy.ts imports this file, so it uses Web APIs only: no "server-only", no database.
 
 export const VISITOR_COOKIE = "tg_visitor";
-// Same as the life of a demo copy; the cookie is issued only when missing, never extended.
+// Same as the life of a demo copy. proxy.ts sets a valid cookie again on every request, so both count from the last visit.
 export const VISITOR_COOKIE_MAX_AGE_S = 7 * 24 * 60 * 60;
 
 export interface VisitorCookieOptions {
