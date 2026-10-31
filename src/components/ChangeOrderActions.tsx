@@ -68,18 +68,22 @@ export function ChangeOrderActions({ order, sendBlockedReason, statusLineId }: C
                 key="keep"
                 ref={keepRef}
                 type="button"
-                onClick={keepCharge}
+                onClick={pending ? undefined : keepCharge}
+                aria-disabled={pending || undefined}
                 aria-describedby={confirmId}
                 className="min-h-11 rounded-md px-3 text-sm font-semibold text-ink-soft hover:text-ink"
               >
                 Keep the charge
               </button>
+              {/* aria-disabled while saving, not disabled: a disabled button drops the focus it holds. */}
               <button
                 key="confirm"
                 type="submit"
-                disabled={pending}
-                aria-busy={pending || undefined}
-                className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet disabled:cursor-wait disabled:opacity-60"
+                aria-disabled={pending || undefined}
+                onClick={(event) => {
+                  if (pending) event.preventDefault(); // no second submit while the first is saving
+                }}
+                className="min-h-11 rounded-md bg-ink px-4 text-sm font-semibold text-sheet aria-disabled:cursor-wait aria-disabled:bg-rule aria-disabled:text-ink-soft"
               >
                 Confirm: include at no charge
               </button>
