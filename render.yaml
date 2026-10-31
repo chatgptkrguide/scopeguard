@@ -1,0 +1,30 @@
+# Tollgate on Render: one web service with a persistent disk for the SQLite file.
+# Deploys are manual from the `deploy` branch (auto-deploy off). Secrets are entered in the Render Dashboard.
+services:
+  - type: web
+    name: tollgate
+    runtime: node
+    plan: 0.5c-512mb # $7/month, 0.5 CPU, 512 MB (the plan formerly called Starter)
+    region: oregon
+    branch: deploy
+    autoDeployTrigger: "off" # quoted: a bare off is a boolean in YAML 1.1
+    buildCommand: pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start # migrations run in src/instrumentation.ts before the server takes requests
+    healthCheckPath: /api/health/live
+    disk:
+      name: tollgate-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PAYPAL_ENV
+        value: sandbox # the app refuses to start on Render with anything else
+      - key: DATABASE_URL
+        value: file:/var/data/tollgate.db # must stay under the disk mount
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false # set after the webhook is registered (WP 2.3.5)
+      - key: ANTHROPIC_API_KEY
+        sync: false # phase 4
