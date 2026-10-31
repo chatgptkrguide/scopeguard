@@ -21,6 +21,8 @@ export const projects = sqliteTable(
     lastSeenAt: text("last_seen_at").notNull().default(""),
   },
   (t) => [
+    // Cleanup looks up copies by last use every time a new copy is made.
+    index("projects_last_seen_idx").on(t.lastSeenAt),
     check("projects_rate_positive", sql`${t.hourlyRateCents} > 0`),
     check("projects_hours_per_day_positive", sql`${t.hoursPerDay} > 0`),
   ],

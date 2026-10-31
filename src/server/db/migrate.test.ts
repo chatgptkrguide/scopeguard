@@ -1,10 +1,11 @@
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sql } from "drizzle-orm";
+import { lt, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type Db } from "./client";
 import { runMigrations } from "./migrate";
+import { projects } from "./schema";
 
 const MIGRATIONS = "drizzle";
 
@@ -59,6 +60,20 @@ describe("마이그레이션", () => {
       { id: "demo", created_at: "2026-10-30T08:00:00.000Z", last_seen_at: "2026-10-30T08:00:00.000Z" },
       { id: "v_old", created_at: "2026-10-31T12:30:00.000Z", last_seen_at: "2026-10-31T12:30:00.000Z" },
     ]);
+  });
+
+  it("0000만 적용된 DB에 행이 있어도 last_seen_at 인덱스까지 만들어지고 정리 조회가 그 인덱스를 쓴다", async () => {
+    await runMigrations(db, oldFolder);
+    await insertOldProject(db, "demo", "2026-10-30T08:00:00.000Z");
+
+    await runMigrations(db, MIGRATIONS);
+
+    const indexes = await db.all<{ name: string }>(sql`PRAGMA index_list(projects)`);
+    expect(indexes.map((i) => i.name)).toContain("projects_last_seen_idx");
+    // The same lookup deleteExpiredCopies makes.
+    const lookup = db.select({ id: projects.id }).from(projects).where(lt(projects.lastSeenAt, "2026-10-31T00:00:00.000Z")).toSQL();
+    const plan = await db.$client.execute({ sql: `EXPLAIN QUERY PLAN ${lookup.sql}`, args: lookup.params.map(String) });
+    expect(plan.rows.map((r) => String(r.detail)).join("\n")).toContain("projects_last_seen_idx");
   });
 
   it("이미 끝까지 적용된 DB에 다시 돌리면 아무것도 바꾸지 않는다(채우기가 다시 돌지 않는다)", async () => {

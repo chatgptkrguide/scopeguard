@@ -1,0 +1,1 @@
+CREATE INDEX `projects_last_seen_idx` ON `projects` (`last_seen_at`);

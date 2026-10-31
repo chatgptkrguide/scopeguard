@@ -15,6 +15,13 @@
       "when": 1793358861937,
       "tag": "0001_projects_last_seen_at",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793410333220,
+      "tag": "0002_projects_last_seen_idx",
+      "breakpoints": true
     }
   ]
 }
