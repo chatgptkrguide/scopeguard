@@ -261,6 +261,79 @@ describe("견적 발송·취소·다시 견적", () => {
       expect(await row(draft.id)).toMatchObject({ status: "sent", sendClaimedAt: null });
     });
 
+    // P2-D3. Unconfirmed assumption, named in the test titles: PayPal handles the sends of one invoice one at a time,
+    // so the first it handles sends the invoice and any later one answers INVOICE_ALREADY_SENT. The same goes for
+    // creating: the first number wins and a later create finds that invoice (created: false).
+    function serializingPayPal() {
+      let openGate!: () => void;
+      const gate = new Promise<void>((resolve) => (openGate = resolve));
+      let created = false;
+      let sent = false;
+      const paypal = fakeGateway({
+        create: async (input) => {
+          const first = !created;
+          created = true;
+          return { id: INVOICE_ID, invoiceNumber: invoiceNumberFor(input.changeOrderId), created: first };
+        },
+        send: async () => {
+          const wasSent = sent;
+          sent = true;
+          return wasSent ? "already_sent" : "sent";
+        },
+      });
+      return { ...paypal, gate, openGate };
+    }
+
+    it("PayPal이 같은 청구서의 /send를 직렬화한다는 가정 아래: PayPal 발송 중 2분 만료를 넘긴 느린 요청과 이어받은 요청이 같은 청구서를 보내도 작성 1번·발송 기록 1번이고 둘 다 ok다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const pp = serializingPayPal();
+      const slowGateway: InvoiceGateway = {
+        ...pp.gateway,
+        send: async (id) => {
+          await pp.gate; // stuck inside PayPal past the claim's lifetime
+          return pp.gateway.send(id);
+        },
+      };
+
+      const slow = sendOwnedChangeOrder(deps(slowGateway), mine, draft.id);
+      await vi.waitFor(async () => expect((await row(draft.id)).paypalInvoiceId).toBe(INVOICE_ID));
+      clock.set(new Date(T0.getTime() + SEND_CLAIM_TTL_MS + 5000));
+      const takeover = await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
+      pp.openGate();
+      const late = await slow;
+
+      expect([takeover, late]).toEqual([{ ok: true }, { ok: true }]);
+      expect(pp.calls.create).toHaveLength(1);
+      expect(pp.calls.send).toEqual([INVOICE_ID, INVOICE_ID]); // two /send calls, one email by the assumption
+      expect(await kinds(mine)).toEqual(["invoice_created", "invoice_sent"]);
+      expect(await row(draft.id)).toMatchObject({ status: "sent", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+    });
+
+    it("PayPal이 같은 번호의 작성과 같은 청구서의 /send를 직렬화한다는 가정 아래: 청구서 작성 중 2분 만료를 넘긴 느린 요청과 이어받은 요청이 있어도 청구서는 하나이고 둘 다 ok다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const pp = serializingPayPal();
+      const slowGateway: InvoiceGateway = {
+        ...pp.gateway,
+        create: async (input) => {
+          await pp.gate; // stuck before PayPal handled the create, past the claim's lifetime
+          return pp.gateway.create(input);
+        },
+      };
+
+      const slow = sendOwnedChangeOrder(deps(slowGateway), mine, draft.id);
+      await vi.waitFor(async () => expect((await row(draft.id)).sendClaimedAt).not.toBeNull());
+      clock.set(new Date(T0.getTime() + SEND_CLAIM_TTL_MS + 5000));
+      const takeover = await sendOwnedChangeOrder(deps(pp.gateway), mine, draft.id);
+      pp.openGate();
+      const late = await slow;
+
+      expect([takeover, late]).toEqual([{ ok: true }, { ok: true }]);
+      expect(pp.calls.create).toHaveLength(2); // the late create finds the takeover's invoice by number
+      expect(new Set(pp.calls.send)).toEqual(new Set([INVOICE_ID]));
+      expect(await kinds(mine)).toEqual(["invoice_created", "invoice_sent"]);
+      expect(await row(draft.id)).toMatchObject({ status: "sent", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+    });
+
     it("발송 표시가 2분 안이면 in_progress이고 PayPal을 부르지 않는다", async () => {
       const draft = await orderOf(mine, "draft");
       const recent = new Date(T0.getTime() - SEND_CLAIM_TTL_MS + 5000).toISOString();

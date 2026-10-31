@@ -19,6 +19,10 @@ export async function ownedStatus(db: Db, ownerProjectId: string, changeOrderId:
 
 // A send claim older than this is abandoned (the request died), and the next send takes it over. Longer than
 // the slowest send: five PayPal calls of at most 10 s each, plus one 401 retry.
+// Assumption, not confirmed in the sandbox (P2-D3): a request slower than this may still be running when the next
+// one takes over, and both may then ask PayPal to send the same invoice at almost the same moment. The invoice
+// number still stops a second invoice, but one email relies on PayPal handling the sends of one invoice one at a
+// time, so one of them sends it and the other gets INVOICE_ALREADY_SENT (which counts as sent).
 export const SEND_CLAIM_TTL_MS = 2 * 60 * 1000;
 
 const staleClaimBefore = (now: Date) => new Date(now.getTime() - SEND_CLAIM_TTL_MS).toISOString();

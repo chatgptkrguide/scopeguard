@@ -290,6 +290,8 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
         summary: `PayPal shows invoice ${invoiceNumber} as cancelled, so this change order was marked cancelled; quote it again for a new invoice`,
       });
 
+    // A request that outlived its claim may be sending this same invoice right now; PayPal is assumed to handle
+    // the two sends one at a time (SEND_CLAIM_TTL_MS, P2-D3).
     step = "send";
     sendAsked = true;
     let sendResult: "sent" | "already_sent";
