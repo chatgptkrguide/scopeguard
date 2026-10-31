@@ -1,4 +1,4 @@
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, countDistinct, eq, gte, inArray, sql } from "drizzle-orm";
 import type { ActivityEvent, NewActivityEvent } from "../../domain/activity";
 import type { Db } from "./client";
 import { activityEvents } from "./schema";
@@ -21,6 +21,17 @@ export function activityInsertAfterChange(db: Db, event: NewActivityEvent) {
     SELECT ${event.projectId}, ${event.changeOrderId}, ${event.kind}, ${event.actor}, ${event.summary}, ${detail}, ${event.at}
     WHERE changes() > 0
   `);
+}
+
+// How many change orders, across every copy, got an invoice created or sent since a time: the part of the
+// server-wide send cap that survives a restart (P2-S1). A demo reset deletes its copy's rows, so the server
+// process keeps its own count too (domain/send-limit.ts).
+export async function countSendsSince(db: Db, since: string): Promise<number> {
+  const [row] = await db
+    .select({ n: countDistinct(activityEvents.changeOrderId) })
+    .from(activityEvents)
+    .where(and(inArray(activityEvents.kind, ["invoice_created", "invoice_sent"]), gte(activityEvents.at, since)));
+  return row?.n ?? 0;
 }
 
 // One copy's steps, oldest first.

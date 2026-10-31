@@ -29,6 +29,7 @@ const errorText: Record<ActionError | PayPalActionError, string> = {
   invoice_exists: "PayPal already has an invoice for this, so it can't be included at no charge. Send it again; you can cancel it afterwards.",
   paypal_unconfirmed: "PayPal may have sent it, but this page couldn't confirm it. Press Send again to check; the client won't get a second invoice.",
   invoice_void: "PayPal can't use this invoice any more, so it's marked cancelled here. Quote it again to send a new one.",
+  rate_limited: "This demo has sent as many PayPal invoices as it may for now, so nothing was sent. Try again later.",
 };
 
 const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {

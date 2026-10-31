@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoiceNumberFor } from "@/domain/invoice";
+import { createSendLog, type SendLog } from "@/domain/send-limit";
 import {
   cancelOwnedChangeOrder,
   invoiceGateway,
@@ -13,7 +14,7 @@ import {
 import { listActivity } from "./db/activity";
 import { waiveOwnedChangeOrder } from "./db/change-orders";
 import { createDb, type Db } from "./db/client";
-import { ensureDemoCopy } from "./db/demo";
+import { ensureDemoCopy, resetDemoCopy } from "./db/demo";
 import { runMigrations } from "./db/migrate";
 import { activityEvents, changeOrders, projects } from "./db/schema";
 import { parseEnv } from "./env";
@@ -101,6 +102,7 @@ describe("견적 발송·취소·다시 견적", () => {
   let mine: string;
   let theirs: string;
   let clock: ReturnType<typeof steppingClock>;
+  let sendLog: SendLog;
 
   beforeEach(async () => {
     db = createDb(":memory:");
@@ -108,10 +110,11 @@ describe("견적 발송·취소·다시 견적", () => {
     mine = (await ensureDemoCopy(db, "visitor-a", T0)).projectId;
     theirs = (await ensureDemoCopy(db, "visitor-b", T0)).projectId;
     clock = steppingClock();
+    sendLog = createSendLog();
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  const deps = (paypal: InvoiceGateway | null): BillingDeps => ({ db, paypal, now: clock.now });
+  const deps = (paypal: InvoiceGateway | null): BillingDeps => ({ db, paypal, now: clock.now, sendLog });
   const orderOf = async (projectId: string, status: "draft" | "paid") =>
     (await db.select().from(changeOrders).where(and(eq(changeOrders.projectId, projectId), eq(changeOrders.status, status))))[0];
   const row = async (id: string) => (await db.select().from(changeOrders).where(eq(changeOrders.id, id)))[0];
@@ -520,6 +523,93 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(result).toEqual({ ok: false, error: "paypal_rejected" });
       expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sentAt: null });
+    });
+  });
+
+  describe("서버 전체 발송 상한 (P2-S1)", () => {
+    // n more demo copies, each with its own draft: sends from many visitors.
+    async function draftsOfNewCopies(n: number): Promise<Array<{ projectId: string; draftId: string }>> {
+      const copies = [];
+      for (let i = 0; i < n; i++) {
+        const { projectId } = await ensureDemoCopy(db, `visitor-many-${i}`, T0);
+        copies.push({ projectId, draftId: (await orderOf(projectId, "draft")).id });
+      }
+      return copies;
+    }
+
+    // A healthy PayPal that gives every new invoice its own id.
+    function manyInvoices() {
+      let n = 0;
+      return fakeGateway({
+        create: async (input) => ({ id: `INV2-${String(n++).padStart(4, "0")}-AAAA-BBBB-CCCC`, invoiceNumber: invoiceNumberFor(input.changeOrderId), created: true }),
+      });
+    }
+
+    beforeEach(() => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    it("여러 사본이 1분 안에 10건을 보내면 11번째는 PayPal을 부르지 않고 rate_limited이며 발송 표시가 풀리고 draft 그대로다", async () => {
+      const copies = await draftsOfNewCopies(11);
+      const paypal = manyInvoices();
+      const results = [];
+
+      for (const { projectId, draftId } of copies.slice(0, 10)) results.push(await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId));
+      const callsBefore = paypal.total();
+      const [last] = copies.slice(10);
+      const refused = await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId);
+
+      expect(results).toEqual(Array(10).fill({ ok: true }));
+      expect(refused).toEqual({ ok: false, error: "rate_limited" });
+      expect(paypal.total()).toBe(callsBefore);
+      expect(await row(last.draftId)).toMatchObject({ status: "draft", sendClaimedAt: null, paypalInvoiceId: null });
+    });
+
+    it("1분이 지나면 다시 보낼 수 있다", async () => {
+      const copies = await draftsOfNewCopies(11);
+      const paypal = manyInvoices();
+      for (const { projectId, draftId } of copies.slice(0, 10)) await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId);
+      const [last] = copies.slice(10);
+      clock.set(new Date(T0.getTime() + 2 * 60 * 1000));
+
+      expect(await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId)).toEqual({ ok: true });
+    });
+
+    it("발송·재설정을 반복해 활동 기록을 지워도 같은 서버 프로세스에서는 상한이 유지된다", async () => {
+      const paypal = manyInvoices();
+      const results = [];
+
+      for (let i = 0; i < 11; i++) {
+        const draft = await orderOf(mine, "draft");
+        results.push(await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id));
+        await resetDemoCopy(db, mine, clock.now()); // deletes this copy's activity rows and gives it a new draft id
+      }
+
+      expect(await db.select().from(activityEvents)).toEqual([]);
+      expect(results.slice(0, 10)).toEqual(Array(10).fill({ ok: true }));
+      expect(results[10]).toEqual({ ok: false, error: "rate_limited" });
+      expect(paypal.calls.create).toHaveLength(10);
+    });
+
+    it("서버 프로세스가 다시 시작돼도(새 로그) DB의 발송 기록으로 상한이 유지된다", async () => {
+      const copies = await draftsOfNewCopies(11);
+      const paypal = manyInvoices();
+      for (const { projectId, draftId } of copies.slice(0, 10)) await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId);
+      sendLog = createSendLog(); // the restarted process remembers nothing
+      const [last] = copies.slice(10);
+
+      expect(await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId)).toEqual({ ok: false, error: "rate_limited" });
+    });
+
+    it("상한 안의 요청끼리 동시에 보내도 마지막 한 자리는 하나만 가져간다", async () => {
+      const copies = await draftsOfNewCopies(12);
+      const paypal = manyInvoices();
+      for (const { projectId, draftId } of copies.slice(0, 9)) await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId);
+
+      const results = await Promise.all(copies.slice(9).map(({ projectId, draftId }) => sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId)));
+
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(results.filter((r) => !r.ok)).toEqual(Array(2).fill({ ok: false, error: "rate_limited" }));
     });
   });
 

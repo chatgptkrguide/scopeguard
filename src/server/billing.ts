@@ -4,7 +4,8 @@ import type { ActionResult, BillingActionResult, PayPalActionError } from "@/dom
 import { canTransition } from "@/domain/change-order";
 import { invoiceNumberFor, SENT_LIKE } from "@/domain/invoice";
 import { extraDaysForHours, formatUsd, priceForHours, toPayPalValue } from "@/domain/money";
-import { activityInsert, activityInsertAfterChange } from "./db/activity";
+import { createSendLog, SEND_LIMITS, takeSend, type SendLog } from "@/domain/send-limit";
+import { activityInsert, activityInsertAfterChange, countSendsSince } from "./db/activity";
 import {
   claimSend,
   markCancelled,
@@ -50,6 +51,9 @@ export interface BillingDeps {
   db: Db;
   paypal: InvoiceGateway | null; // null: no PayPal keys on this server
   now: () => Date; // read again at each step, so activity times follow the steps
+  // This process's recent sends, for the server-wide cap (P2-S1). liveBillingDeps passes the server's own; without
+  // one, only the database's count applies.
+  sendLog?: SendLog;
 }
 
 export function invoiceGateway(client: PayPalClient): InvoiceGateway {
@@ -61,9 +65,12 @@ export function invoiceGateway(client: PayPalClient): InvoiceGateway {
   };
 }
 
+// Lives as long as the server process: every request's sends count toward one cap.
+const serverSendLog = createSendLog();
+
 export function liveBillingDeps(): BillingDeps {
   const client = getPayPal();
-  return { db: getDb(), paypal: client && invoiceGateway(client), now: () => new Date() };
+  return { db: getDb(), paypal: client && invoiceGateway(client), now: () => new Date(), sendLog: serverSendLog };
 }
 
 export { SEND_CLAIM_TTL_MS };
@@ -193,6 +200,13 @@ async function voidDraft(deps: BillingDeps, ownerProjectId: string, changeOrderI
   return status === "sent" ? OK : fail(status === null ? "not_found" : "invalid_state");
 }
 
+// The server-wide send cap (P2-S1). The database's counts are read first; the decision itself never awaits, so two
+// requests in this process can't both take the last place.
+async function withinSendLimit(deps: BillingDeps, at: Date): Promise<boolean> {
+  const stored = await Promise.all(SEND_LIMITS.map((limit) => countSendsSince(deps.db, new Date(at.getTime() - limit.windowMs).toISOString())));
+  return takeSend(deps.sendLog ?? createSendLog(), at, stored);
+}
+
 // PayPal's status for the invoice, or null if it can't be read just now.
 async function statusIfReadable(paypal: InvoiceGateway, invoiceId: string): Promise<string | null> {
   try {
@@ -209,7 +223,8 @@ async function statusIfReadable(paypal: InvoiceGateway, invoiceId: string): Prom
 // Every way out gives the claim back, a database error included, so a retry isn't held off for two minutes. Once
 // PayPal was asked to send, a failure answers paypal_unconfirmed, never "nothing changed": the client may have the
 // invoice, and Send again settles it either way (P2-D2). An invoice PayPal shows as cancelled, or a number that is
-// used up, makes the draft cancelled so it can be quoted again (P2-D4).
+// used up, makes the draft cancelled so it can be quoted again (P2-D4). Past the server-wide send cap, PayPal isn't
+// called at all (P2-S1).
 export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
   const { db, paypal, now } = deps;
   if (!paypal) return fail("not_configured");
@@ -239,6 +254,11 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     if (current?.status !== "draft") {
       await release();
       return fail(current === null ? "not_found" : "invalid_state");
+    }
+    if (!(await withinSendLimit(deps, claimedAt))) {
+      console.warn("the server-wide PayPal send limit is reached; not calling PayPal");
+      await release();
+      return fail("rate_limited");
     }
     let invoiceId = current.paypalInvoiceId;
     if (!invoiceId) {
