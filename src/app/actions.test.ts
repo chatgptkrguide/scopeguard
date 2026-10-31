@@ -165,7 +165,7 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
     vi.mocked(refresh).mockClear();
     const ordersBefore = await ordersOf(mine);
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    // The reset batch fails on its fourth statement, after it already deleted change orders.
+    // The reset batch fails on its fifth statement, after it already deleted activity and change orders.
     await db.run(sql`CREATE TRIGGER fail_reset BEFORE DELETE ON scope_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`);
 
     const result = await resetDemo(null, form({ projectId: mine }));

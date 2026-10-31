@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-// Relative import: drizzle-kit loads this file without the "@/" path alias.
+// Relative imports: drizzle-kit loads this file without the "@/" path alias.
+import type { ActivityActor, ActivityDetail, ActivityKind } from "../../domain/activity";
 import { CHANGE_ORDER_STATUSES } from "../../domain/types";
 
 export const projects = sqliteTable(
@@ -101,6 +102,9 @@ export const changeOrders = sqliteTable(
     payerViewUrl: text("payer_view_url"),
     sentAt: text("sent_at"),
     paidAt: text("paid_at"),
+    // When a send started (ISO). A second send of the same order stops while this is under two minutes old,
+    // so it never reaches PayPal. Bookkeeping only: not part of ChangeOrder and never shown.
+    sendClaimedAt: text("send_claimed_at"),
   },
   (t) => [
     index("change_orders_project_idx").on(t.projectId),
@@ -132,3 +136,22 @@ export const webhookEvents = sqliteTable("webhook_events", {
   receivedAt: text("received_at").notNull(),
   processedAt: text("processed_at"),
 });
+
+// The steps shown in the activity panel, written in the same batch as the change they describe.
+// No CHECK on kind or actor: later phases add kinds, and SQLite can only change a CHECK by rebuilding the table.
+export const activityEvents = sqliteTable(
+  "activity_events",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    changeOrderId: text("change_order_id").references(() => changeOrders.id, { onDelete: "cascade" }),
+    kind: text().$type<ActivityKind>().notNull(),
+    actor: text().$type<ActivityActor>().notNull(),
+    summary: text().notNull(),
+    detail: text({ mode: "json" }).$type<ActivityDetail>(),
+    at: text().notNull(),
+  },
+  (t) => [index("activity_events_project_idx").on(t.projectId, t.id)],
+);

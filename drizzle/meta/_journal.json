@@ -22,6 +22,13 @@
       "when": 1793410333220,
       "tag": "0002_projects_last_seen_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793414462703,
+      "tag": "0003_activity_and_send_claim",
+      "breakpoints": true
     }
   ]
 }

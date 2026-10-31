@@ -5,7 +5,7 @@ import { locateFindings } from "../../domain/finding";
 import { extraDaysForHours, priceForHours } from "../../domain/money";
 import type { Db } from "./client";
 import { isUniqueViolation } from "./errors";
-import { changeOrders, findings, messages, projects, scopeItems } from "./schema";
+import { activityEvents, changeOrders, findings, messages, projects, scopeItems } from "./schema";
 
 // Every visitor gets their own copy of this demo project. Harbor & Pine Coffee and Maya Lindqvist are fictional.
 
@@ -147,6 +147,7 @@ function insertStatements(db: Db, rows: DemoRows) {
 function deleteProjectStatements(db: Db, inProjects: (projectIdColumn: SQLiteColumn) => SQL) {
   const projectMessageIds = db.select({ id: messages.id }).from(messages).where(inProjects(messages.projectId));
   return [
+    db.delete(activityEvents).where(inProjects(activityEvents.projectId)),
     db.delete(changeOrders).where(inProjects(changeOrders.projectId)),
     db.delete(findings).where(inArray(findings.messageId, projectMessageIds)),
     db.delete(messages).where(inProjects(messages.projectId)),
