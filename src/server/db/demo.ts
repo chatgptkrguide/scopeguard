@@ -84,7 +84,8 @@ const demoFindingDrafts = [
 ] as const;
 
 export interface DemoRows {
-  project: typeof projects.$inferInsert;
+  // last_seen_at has a database default only for migration 0001; a copy always sets it.
+  project: typeof projects.$inferInsert & { lastSeenAt: string };
   scopeItems: (typeof scopeItems.$inferInsert)[];
   messages: (typeof messages.$inferInsert)[];
   findings: (typeof findings.$inferInsert)[];

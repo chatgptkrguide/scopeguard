@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "20a8fd81-9503-4f34-a4be-3bf4a29cae7e",
+  "id": "de32a2d7-7eb2-4162-b7d1-683ef754d538",
   "prevId": "b41957c4-dd5f-4a5c-bc81-f04c05ccfa2d",
   "tables": {
     "change_orders": {
@@ -416,7 +416,8 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
+          "autoincrement": false,
+          "default": "''"
         }
       },
       "indexes": {},

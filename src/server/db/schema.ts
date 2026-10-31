@@ -16,7 +16,9 @@ export const projects = sqliteTable(
     dueOn: text("due_on").notNull(),
     createdAt: text("created_at").notNull(),
     // Last time the visitor opened or reset this copy; copies unused for seven days are deleted.
-    lastSeenAt: text("last_seen_at").notNull(),
+    // The empty default exists only so SQLite can add the column to a table that already has rows
+    // (migration 0001 then copies created_at into it). Every write sets a real time; see DemoRows.
+    lastSeenAt: text("last_seen_at").notNull().default(""),
   },
   (t) => [
     check("projects_rate_positive", sql`${t.hourlyRateCents} > 0`),
