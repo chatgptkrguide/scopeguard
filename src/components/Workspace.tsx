@@ -194,8 +194,11 @@ function MarginNote({ quote, reason, order, sendBlockedReason }: MarginNoteProps
   const open = order.status === "draft";
 
   return (
+    // role="note": a margin note belongs to its message, not a landmark of its own. The element stays an
+    // aside because the design's test hooks select aside[data-change-order-id].
     <aside
       id={noteId(order)}
+      role="note"
       className={`margin-note border-l-2 pl-4 ${noteLine[order.status]}`}
       data-animate={open}
       data-change-order-id={order.id}
@@ -274,7 +277,7 @@ function ScopePanel({ data }: ScopePanelProps) {
   const { project, scopeItems, changeOrders, totals } = data;
 
   return (
-    <aside aria-labelledby="scope-title" className="rounded-md border border-rule bg-sheet px-5 py-6 lg:sticky lg:top-6">
+    <section aria-labelledby="scope-title" className="rounded-md border border-rule bg-sheet px-5 py-6 lg:sticky lg:top-6">
       <h2 id="scope-title" className="font-serif text-[22px]">
         Scope
       </h2>
@@ -318,6 +321,6 @@ function ScopePanel({ data }: ScopePanelProps) {
           <dd>{formatUsd(totals.totalCents)}</dd>
         </div>
       </dl>
-    </aside>
+    </section>
   );
 }
