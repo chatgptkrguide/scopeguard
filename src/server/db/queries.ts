@@ -3,6 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { displayedOrder, projectTotals, type WorkspaceData } from "@/domain/workspace";
 import type { ChangeOrder, Finding, Message, Project, ScopeItem } from "@/domain/types";
 import type { Db } from "./client";
+import { ensureDemoCopy } from "./demo";
 import { changeOrders, findings, messages, projects, scopeItems } from "./schema";
 
 // Columns are listed by hand, so bookkeeping columns (created_at, last_seen_at) never reach the screen.
@@ -100,4 +101,20 @@ export async function getWorkspace(db: Db, projectId: string): Promise<Workspace
     changeOrders: orders,
     totals: projectTotals(items, orders),
   };
+}
+
+// The visitor's workspace, creating their copy on the first visit. Another visitor's cleanup can delete a
+// copy unused for seven days between ensuring it and reading it; then the copy is made once more, not a 500.
+export async function openVisitorWorkspace(
+  db: Db,
+  visitorId: string,
+  now: Date,
+  read: typeof getWorkspace = getWorkspace, // tests replace it to step into that race
+): Promise<WorkspaceData> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { projectId } = await ensureDemoCopy(db, visitorId, now);
+    const data = await read(db, projectId);
+    if (data) return data;
+  }
+  throw new Error("demo copy missing after ensure");
 }

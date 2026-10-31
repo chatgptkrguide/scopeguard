@@ -3,8 +3,7 @@ import { Suspense, type ReactElement } from "react";
 import { Workspace } from "@/components/Workspace";
 import { WorkspaceSkeleton } from "@/components/WorkspaceSkeleton";
 import { getDb } from "@/server/db/client";
-import { ensureDemoCopy } from "@/server/db/demo";
-import { getWorkspace } from "@/server/db/queries";
+import { openVisitorWorkspace } from "@/server/db/queries";
 import { readVisitorId } from "@/server/session";
 
 // Sending stays off until the PayPal invoice flow lands (P2).
@@ -26,10 +25,7 @@ async function VisitorWorkspace(): Promise<ReactElement> {
   // Everything below needs a real request: the clock, random ids, and the copy's database writes.
   await connection();
 
-  const db = getDb();
-  const { projectId } = await ensureDemoCopy(db, visitorId, new Date());
-  const data = await getWorkspace(db, projectId);
-  if (!data) throw new Error("demo copy missing after ensure");
+  const data = await openVisitorWorkspace(getDb(), visitorId, new Date());
   return <Workspace data={data} sendBlockedReason={SEND_BLOCKED_REASON} />;
 }
 

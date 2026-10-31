@@ -1,10 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDb, type Db } from "./client";
-import { ensureDemoCopy } from "./demo";
+import { DEMO_COPY_MAX_AGE_MS, deleteExpiredCopies, ensureDemoCopy, projectIdForVisitor } from "./demo";
 import { runMigrations } from "./migrate";
-import { getWorkspace } from "./queries";
-import { changeOrders } from "./schema";
+import { getWorkspace, openVisitorWorkspace } from "./queries";
+import { changeOrders, projects } from "./schema";
 
 const NOW = new Date("2026-11-01T09:00:00.000Z");
 
@@ -108,5 +108,55 @@ describe("작업 화면 조회", () => {
     );
     expect(data?.project).not.toHaveProperty("createdAt");
     expect(data?.project).not.toHaveProperty("lastSeenAt");
+  });
+});
+
+describe("방문자 작업 화면 열기", () => {
+  let db: Db;
+  const later = new Date(NOW.getTime() + DEMO_COPY_MAX_AGE_MS + 2 * 60 * 60 * 1000);
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    await runMigrations(db);
+  });
+
+  // Reads like getWorkspace, but the first `racedReads` reads first let another visitor's cleanup delete every copy.
+  function racingRead(racedReads: number) {
+    const calls = { count: 0 };
+    const read: typeof getWorkspace = async (target, projectId) => {
+      calls.count += 1;
+      if (calls.count <= racedReads) await deleteExpiredCopies(target, new Date(later.getTime() + DEMO_COPY_MAX_AGE_MS + 1));
+      return getWorkspace(target, projectId);
+    };
+    return { read, calls };
+  }
+
+  it("처음 온 방문자에게 사본을 만들고 한 번 읽어 화면을 돌려준다", async () => {
+    const { read, calls } = racingRead(0);
+
+    const data = await openVisitorWorkspace(db, "visitor-a", NOW, read);
+
+    expect(data.project.id).toBe(projectIdForVisitor("visitor-a"));
+    expect(data.totals.totalCents).toBe(330000);
+    expect(calls.count).toBe(1);
+  });
+
+  it("사본을 보장한 뒤 읽기 전에 정리가 그 사본을 지우면 한 번 더 만들어 시드 화면을 돌려준다", async () => {
+    await ensureDemoCopy(db, "visitor-a", NOW);
+    const { read, calls } = racingRead(1);
+
+    const data = await openVisitorWorkspace(db, "visitor-a", later, read);
+
+    expect(data.project.id).toBe(projectIdForVisitor("visitor-a"));
+    expect(data.changeOrders.map((o) => o.status)).toEqual(["paid", "draft"]);
+    expect(calls.count).toBe(2);
+    expect(await db.select({ id: projects.id }).from(projects)).toEqual([{ id: projectIdForVisitor("visitor-a") }]);
+  });
+
+  it("다시 만든 사본도 읽기 전에 지워지면 두 번까지만 시도하고 오류를 낸다", async () => {
+    const { read, calls } = racingRead(2);
+
+    await expect(openVisitorWorkspace(db, "visitor-a", later, read)).rejects.toThrow("demo copy missing after ensure");
+    expect(calls.count).toBe(2);
   });
 });
