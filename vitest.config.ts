@@ -11,6 +11,8 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts"],
+    // Real-sandbox checks run only through `pnpm accept:sandbox`.
+    exclude: ["**/node_modules/**", "src/**/*.sandbox.accept.test.ts"],
     environment: "node",
     clearMocks: true,
     restoreMocks: true,

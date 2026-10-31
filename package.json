@@ -13,7 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/db.mts",
     "db:seed": "tsx scripts/db.mts --seed",
-    "e2e": "next build && playwright test"
+    "e2e": "next build && playwright test",
+    "accept:sandbox": "vitest run --config vitest.sandbox.config.ts --passWithNoTests"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
