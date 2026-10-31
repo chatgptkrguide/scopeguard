@@ -136,7 +136,7 @@ docs/                       this file
 |:--|:--|:--|
 | `PAYPAL_ENV` | paypal | `sandbox` for the hackathon; `live` refuses to start without both keys and the webhook id |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | paypal | REST app credentials |
-| `PAYPAL_WEBHOOK_ID` | webhook route | From the app's webhook settings; required to verify signatures |
+| `PAYPAL_WEBHOOK_ID` | webhook route (phase 3) | From the app's webhook settings; required to verify signatures |
 | `ANTHROPIC_API_KEY` | ai | Without it, message review is disabled and the UI says so |
 | `DATABASE_URL` | db | Defaults to `file:data/tollgate.db`; on Render, point it at the disk, e.g. `file:/var/data/tollgate.db` |
 
@@ -144,7 +144,7 @@ docs/                       this file
 
 - **Database writes:** statements that must land together use `db.batch()`. Interactive `db.transaction()` callbacks that await between statements are not used in request handling: libSQL's local client runs on the Node thread, so any other write during an open write transaction fails at once with `SQLITE_BUSY`, and a busy timeout only blocks the thread.
 - **Unit (Vitest):** status transitions, pricing and rounding, finding validation, database constraints, demo copies (independence, concurrent creation, reset, seven-day cleanup by last use), the visitor cookie in `proxy.ts`, workspace queries and totals, the waive and reset actions refusing another copy's ids, PayPal token caching and the one 401 retry, invoice request bodies and error handling against recorded sandbox responses, the send and cancel commands with a fake PayPal (two sends at once create one invoice, a send interrupted after creating the invoice reuses it), activity order, PayPal client request shapes with `fetch` mocked, and, from phase 3, the webhook handler (verified, unverified, no webhook id configured, verification call failing, duplicate, unknown invoice, partial payment, draft recovery), check payment racing the webhook.
-- **Sandbox, by hand:** send a change order, pay it as the sandbox buyer, watch the webhook arrive. Locally the webhook needs a tunnel. Events from PayPal's webhook simulator can't pass signature verification, so the simulator only shows the route is reachable.
+- **Sandbox, by hand (phase 3):** send a change order, pay it as the sandbox buyer, watch the webhook arrive. Locally the webhook needs a tunnel. Events from PayPal's webhook simulator can't pass signature verification, so the simulator only shows the route is reachable.
 - **Sandbox (`pnpm accept:sandbox`):** runs against the real PayPal sandbox with the keys in `.env.local`, outside `pnpm check`; it sends twice at once and counts the invoices for that change order with the search API, then cancels what it sent.
 - **Browser (Playwright, `pnpm e2e`):** one production build, the installed Chrome, and fresh throwaway databases; phase 1 tests run on a server without PayPal keys, PayPal tests on one with them; two browser contexts get separate copies, state survives reload, reset restores the seed, and a forged id from another copy is refused.
 - Every commit passes `pnpm check` (lint, typecheck, test) and `pnpm build`.
