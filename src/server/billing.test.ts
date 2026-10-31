@@ -1,7 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoiceNumberFor } from "@/domain/invoice";
-import { createSendLog, type SendLog } from "@/domain/send-limit";
 import {
   cancelOwnedChangeOrder,
   invoiceGateway,
@@ -16,7 +15,7 @@ import { waiveOwnedChangeOrder } from "./db/change-orders";
 import { createDb, type Db } from "./db/client";
 import { ensureDemoCopy, resetDemoCopy } from "./db/demo";
 import { runMigrations } from "./db/migrate";
-import { activityEvents, changeOrders, projects } from "./db/schema";
+import { activityEvents, changeOrders, paypalSends, projects } from "./db/schema";
 import { parseEnv } from "./env";
 import { PayPalError } from "./paypal/errors";
 import {
@@ -106,7 +105,6 @@ describe("견적 발송·취소·다시 견적", () => {
   let mine: string;
   let theirs: string;
   let clock: ReturnType<typeof steppingClock>;
-  let sendLog: SendLog;
 
   beforeEach(async () => {
     db = createDb(":memory:");
@@ -114,11 +112,10 @@ describe("견적 발송·취소·다시 견적", () => {
     mine = (await ensureDemoCopy(db, "visitor-a", T0)).projectId;
     theirs = (await ensureDemoCopy(db, "visitor-b", T0)).projectId;
     clock = steppingClock();
-    sendLog = createSendLog();
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  const deps = (paypal: InvoiceGateway | null): BillingDeps => ({ db, paypal, now: clock.now, sendLog });
+  const deps = (paypal: InvoiceGateway | null): BillingDeps => ({ db, paypal, now: clock.now });
   const orderOf = async (projectId: string, status: "draft" | "paid") =>
     (await db.select().from(changeOrders).where(and(eq(changeOrders.projectId, projectId), eq(changeOrders.status, status))))[0];
   const row = async (id: string) => (await db.select().from(changeOrders).where(eq(changeOrders.id, id)))[0];
@@ -579,7 +576,7 @@ describe("견적 발송·취소·다시 견적", () => {
       expect(await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId)).toEqual({ ok: true });
     });
 
-    it("발송·재설정을 반복해 활동 기록을 지워도 같은 서버 프로세스에서는 상한이 유지된다", async () => {
+    it("발송·재설정을 반복해 활동 기록을 지워도 발송 기록 표로 상한이 유지된다 (P2-S1b)", async () => {
       const paypal = manyInvoices();
       const results = [];
 
@@ -595,14 +592,14 @@ describe("견적 발송·취소·다시 견적", () => {
       expect(paypal.calls.create).toHaveLength(10);
     });
 
-    it("서버 프로세스가 다시 시작돼도(새 로그) DB의 발송 기록으로 상한이 유지된다", async () => {
+    it("발송 기록 표는 PayPal을 부른 발송마다 한 줄이고 거부된 발송은 남기지 않는다", async () => {
       const copies = await draftsOfNewCopies(11);
       const paypal = manyInvoices();
-      for (const { projectId, draftId } of copies.slice(0, 10)) await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId);
-      sendLog = createSendLog(); // the restarted process remembers nothing
-      const [last] = copies.slice(10);
 
-      expect(await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId)).toEqual({ ok: false, error: "rate_limited" });
+      for (const { projectId, draftId } of copies) await sendOwnedChangeOrder(deps(paypal.gateway), projectId, draftId);
+
+      const rows = await db.select().from(paypalSends);
+      expect(rows.map((r) => r.changeOrderId)).toEqual(copies.slice(0, 10).map((c) => c.draftId));
     });
 
     it("상한 안의 요청끼리 동시에 보내도 마지막 한 자리는 하나만 가져간다", async () => {
