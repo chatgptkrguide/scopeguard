@@ -71,10 +71,18 @@ const stepText: Record<PayPalStep, string> = {
   cancel: "cancelling the invoice",
 };
 
+// What a refusal at each step leaves behind. Once the invoice was sent, nothing may claim that nothing happened.
+const refusalMeans: Record<PayPalStep, string> = {
+  create: "no invoice was made",
+  send: "it wasn't sent",
+  read: "it was sent but couldn't be confirmed",
+  cancel: "the invoice is still open",
+};
+
 function failureSummary(error: PayPalError, step: PayPalStep): string {
   switch (error.failure) {
     case "rejected":
-      return `PayPal refused the request while ${stepText[step]}${error.issue ? ` (${error.issue})` : ""}; nothing changed here.`;
+      return `PayPal refused the request while ${stepText[step]}${error.issue ? ` (${error.issue})` : ""}; ${refusalMeans[step]}.`;
     case "auth":
       return `PayPal didn't accept the app's credentials while ${stepText[step]}.`;
     case "not_found":
@@ -135,10 +143,22 @@ function errorDetail(error: PayPalError): ActivityDetail {
   return { httpStatus: error.httpStatus, issue: error.issue, debugId: error.debugId };
 }
 
+// Best effort: a claim that can't be given up (the database is down) expires after SEND_CLAIM_TTL_MS anyway.
+async function releaseQuietly(db: Db, ownerProjectId: string, changeOrderId: string, claim: string): Promise<void> {
+  try {
+    await releaseSendClaim(db, ownerProjectId, changeOrderId, claim);
+  } catch (error) {
+    console.error("releasing a send claim failed", error);
+  }
+}
+
 // draft → sent. Order of work: check the owner and status, claim the send (one conditional UPDATE), create the
 // invoice unless the order already has one, save its id before sending, send, read it back, then save sent and
 // the payer link. A request that loses the claim stops before PayPal. If PayPal already has an invoice with this
 // order's number (an earlier try created it but never saved the id), createInvoice finds and reuses it.
+// Every way out gives the claim back, a database error included, so a retry isn't held off for two minutes. Once
+// PayPal was asked to send, a failure answers paypal_unconfirmed, never "nothing changed": the client may have the
+// invoice, and Send again settles it either way (P2-D2).
 export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: string, changeOrderId: string): Promise<BillingActionResult> {
   const { db, paypal, now } = deps;
   if (!paypal) return fail("not_configured");
@@ -157,18 +177,19 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     if (status === "draft") return fail("in_progress");
     return fail(status === null ? "not_found" : "invalid_state");
   }
-  const release = () => releaseSendClaim(db, ownerProjectId, changeOrderId, claim);
+  const release = () => releaseQuietly(db, ownerProjectId, changeOrderId, claim);
 
-  // Read again under the claim: a request that held it before may have saved an invoice id since.
-  const current = await readBillingOrder(db, ownerProjectId, changeOrderId);
-  if (current?.status !== "draft") {
-    await release();
-    return fail(current === null ? "not_found" : "invalid_state");
-  }
   const invoiceNumber = invoiceNumberFor(changeOrderId);
-  let invoiceId = current.paypalInvoiceId;
   let step: PayPalStep = "create";
+  let sendAsked = false; // set just before PayPal is asked to send: from then on the client may have the invoice
   try {
+    // Read again under the claim: a request that held it before may have saved an invoice id since.
+    const current = await readBillingOrder(db, ownerProjectId, changeOrderId);
+    if (current?.status !== "draft") {
+      await release();
+      return fail(current === null ? "not_found" : "invalid_state");
+    }
+    let invoiceId = current.paypalInvoiceId;
     if (!invoiceId) {
       const created = await paypal.create(invoiceInputFor(current));
       const [saved] = await db.batch([
@@ -202,21 +223,23 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     }
 
     step = "send";
+    sendAsked = true;
     const sendResult = await paypal.send(invoiceId);
     step = "read";
     const invoice = await paypal.get(invoiceId);
 
-    // Someone cancelled it in PayPal, or it isn't out yet: don't call it sent (PM decision [6]).
+    // Someone cancelled it in PayPal (PM decision [6]), or PayPal doesn't show it as out yet: don't call it sent.
+    // PayPal accepted the send, though, so the answer can't be that nothing changed.
     if (!SENT_LIKE.has(invoice.status)) {
       await release();
       await recordFailure(deps, {
         ownerProjectId,
         changeOrderId,
         step,
-        summary: `PayPal shows the invoice as ${invoice.status}, so it wasn't marked sent.`,
+        summary: `PayPal accepted the send but shows the invoice as ${invoice.status}, so it isn't marked sent yet.`,
         detail: { httpStatus: 200, issue: invoice.status, debugId: null },
       });
-      return fail("paypal_rejected");
+      return fail(invoice.status === "CANCELLED" ? "paypal_rejected" : "paypal_unconfirmed");
     }
 
     const sentAt = now().toISOString();
@@ -237,11 +260,17 @@ export async function sendOwnedChangeOrder(deps: BillingDeps, ownerProjectId: st
     }
     return OK;
   } catch (error) {
-    if (!(error instanceof PayPalError)) throw error; // a database error: the action answers server_error
-    console.error(`PayPal ${step} failed`, error);
     await release();
+    if (!(error instanceof PayPalError)) {
+      // A database error before PayPal was asked to send: nothing went out, and the action answers server_error.
+      if (!sendAsked) throw error;
+      console.error("saving a sent invoice failed", error);
+      return fail("paypal_unconfirmed");
+    }
+    console.error(`PayPal ${step} failed`, error);
     await recordFailure(deps, { ownerProjectId, changeOrderId, step, summary: failureSummary(error, step), detail: errorDetail(error) });
-    return fail(actionErrorFor(error));
+    // A failed read comes after PayPal accepted the send.
+    return fail(step === "read" ? "paypal_unconfirmed" : actionErrorFor(error));
   }
 }
 
@@ -279,18 +308,26 @@ export async function cancelOwnedChangeOrder(deps: BillingDeps, ownerProjectId: 
     return fail("already_paid");
   }
 
-  const [moved] = await db.batch([
-    markCancelled(db, ownerProjectId, changeOrderId),
-    activityInsertAfterChange(db, {
-      projectId: ownerProjectId,
-      changeOrderId,
-      kind: "invoice_cancelled",
-      actor: "paypal",
-      summary: `Cancelled invoice ${invoiceNumberFor(changeOrderId)} in PayPal`,
-      detail: { invoiceId, alreadyCancelled: result === "already_cancelled" },
-      at: now().toISOString(),
-    }),
-  ]);
+  let moved: { rowsAffected: number };
+  try {
+    [moved] = await db.batch([
+      markCancelled(db, ownerProjectId, changeOrderId),
+      activityInsertAfterChange(db, {
+        projectId: ownerProjectId,
+        changeOrderId,
+        kind: "invoice_cancelled",
+        actor: "paypal",
+        summary: `Cancelled invoice ${invoiceNumberFor(changeOrderId)} in PayPal`,
+        detail: { invoiceId, alreadyCancelled: result === "already_cancelled" },
+        at: now().toISOString(),
+      }),
+    ]);
+  } catch (error) {
+    // PayPal did cancel it; only saving that failed. Cancelling again answers INVOICE_CANCELED_ALREADY and saves it
+    // then, so the answer says so instead of "nothing changed" (P2-D6).
+    console.error("saving a cancelled invoice failed", error);
+    return fail("paypal_unconfirmed");
+  }
   if (moved.rowsAffected === 0) {
     const status = await ownedStatus(db, ownerProjectId, changeOrderId);
     if (status === "cancelled") return OK;

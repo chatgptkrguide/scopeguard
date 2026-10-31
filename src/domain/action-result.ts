@@ -10,6 +10,16 @@ export type ActionResult = { ok: true } | { ok: false; error: ActionError };
 // paypal_rejected: PayPal refused, nothing was sent or cancelled · already_paid: the client paid, so it can't be cancelled
 // not_configured: this server has no PayPal keys
 // invoice_exists: PayPal already has an invoice for this draft, so it can't be waived; sending again settles it
-export const PAYPAL_ACTION_ERRORS = ["in_progress", "paypal_unavailable", "paypal_rejected", "already_paid", "not_configured", "invoice_exists"] as const;
+// paypal_unconfirmed: PayPal took the request (it may have sent or cancelled the invoice) but that couldn't be
+// confirmed or saved here; pressing again checks and settles it
+export const PAYPAL_ACTION_ERRORS = [
+  "in_progress",
+  "paypal_unavailable",
+  "paypal_rejected",
+  "already_paid",
+  "not_configured",
+  "invoice_exists",
+  "paypal_unconfirmed",
+] as const;
 export type PayPalActionError = (typeof PAYPAL_ACTION_ERRORS)[number];
 export type BillingActionResult = { ok: true } | { ok: false; error: ActionError | PayPalActionError };

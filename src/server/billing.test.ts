@@ -300,6 +300,7 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(result).toEqual({ ok: false, error: "paypal_rejected" });
       expect(await row(draft.id)).toMatchObject({ status: "draft", sendClaimedAt: null });
+      expect((await listActivity(db, mine)).at(-1)?.summary).toBe("PayPal refused the request while sending the invoice (CANNOT_SEND_INVOICE); it wasn't sent.");
     });
 
     it("토큰·키 문제(auth)와 없는 청구서(not_found)는 paypal_unavailable로 알린다", async () => {
@@ -444,6 +445,75 @@ describe("견적 발송·취소·다시 견적", () => {
 
       expect(result).toEqual({ ok: false, error: "paypal_rejected" });
       expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sentAt: null });
+    });
+  });
+
+  describe("PayPal 발송 이후 단계의 실패 (P2-D2)", () => {
+    // Makes one kind of write fail the way a busy or unreachable database does.
+    const failWritesWhen = (condition: string) =>
+      db.run(sql.raw(`CREATE TRIGGER fail_write BEFORE UPDATE ON change_orders WHEN ${condition} BEGIN SELECT RAISE(ABORT, 'database is locked'); END`));
+    const healWrites = () => db.run(sql`DROP TRIGGER fail_write`);
+
+    it("PayPal이 발송한 뒤 sent 저장이 DB 오류로 실패하면 paypal_unconfirmed이고 발송 표시가 풀리며, 다시 발송하면 같은 청구서로 sent가 된다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const paypal = fakeGateway();
+      await failWritesWhen("NEW.status = 'sent'");
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_unconfirmed" });
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+      await healWrites();
+      const again = fakeGateway({ send: async () => "already_sent", get: async (id) => sentView(id, draft.id) });
+      expect(await sendOwnedChangeOrder(deps(again.gateway), mine, draft.id)).toEqual({ ok: true });
+      expect([again.calls.create.length, again.calls.send]).toEqual([0, [INVOICE_ID]]);
+      expect((await row(draft.id)).status).toBe("sent");
+    });
+
+    it("발송 전 청구서 id 저장이 DB 오류로 실패하면 PayPal 발송은 하지 않고 발송 표시를 푼 뒤 오류를 던진다(server_error)", async () => {
+      const draft = await orderOf(mine, "draft");
+      const paypal = fakeGateway();
+      await failWritesWhen("NEW.paypal_invoice_id IS NOT NULL AND OLD.paypal_invoice_id IS NULL");
+
+      await expect(sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id)).rejects.toThrow(/database is locked/);
+
+      expect(paypal.calls.send).toHaveLength(0);
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: null, sendClaimedAt: null });
+    });
+
+    it("PayPal이 발송을 받은 뒤 조회가 실패하면 paypal_unavailable이 아니라 paypal_unconfirmed다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const paypal = fakeGateway({ get: async () => Promise.reject(new PayPalError("unavailable", 503, "SERVICE_UNAVAILABLE", null)) });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_unconfirmed" });
+      expect(await row(draft.id)).toMatchObject({ status: "draft", paypalInvoiceId: INVOICE_ID, sendClaimedAt: null });
+      expect((await listActivity(db, mine)).at(-1)?.detail).toMatchObject({ step: "read" });
+    });
+
+    it("PayPal이 발송을 받은 뒤 DRAFT로 보여 주면 sent로 저장하지 않고 paypal_unconfirmed다", async () => {
+      const draft = await orderOf(mine, "draft");
+      const paypal = fakeGateway({ get: async (id) => ({ ...sentView(id, draft.id), status: "DRAFT" }) });
+
+      const result = await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_unconfirmed" });
+      expect(await row(draft.id)).toMatchObject({ status: "draft", sendClaimedAt: null, sentAt: null });
+      expect((await listActivity(db, mine)).at(-1)?.summary).toBe("PayPal accepted the send but shows the invoice as DRAFT, so it isn't marked sent yet.");
+    });
+
+    it("PayPal 취소 뒤 cancelled 저장이 DB 오류로 실패하면 paypal_unconfirmed이고, 다시 취소하면 already_cancelled로 cancelled가 된다 (P2-D6)", async () => {
+      const id = await sentOrder();
+      await failWritesWhen("NEW.status = 'cancelled'");
+
+      const result = await cancelOwnedChangeOrder(deps(fakeGateway().gateway), mine, id);
+
+      expect(result).toEqual({ ok: false, error: "paypal_unconfirmed" });
+      expect((await row(id)).status).toBe("sent");
+      await healWrites();
+      expect(await cancelOwnedChangeOrder(deps(fakeGateway({ cancel: async () => "already_cancelled" }).gateway), mine, id)).toEqual({ ok: true });
+      expect((await row(id)).status).toBe("cancelled");
     });
   });
 

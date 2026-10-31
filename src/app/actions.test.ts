@@ -329,6 +329,19 @@ describe("서버 액션: 발송·취소·다시 견적", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("PayPal이 발송을 받았는데 확인하지 못하면(paypal_unconfirmed) 화면이 Send again으로 바뀌도록 refresh를 부른다", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    request.paypal = { ...healthyPayPal(), get: async () => Promise.reject(new PayPalError("unavailable", null, null, null)) };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await sendChangeOrder(null, form({ changeOrderId: draft.id }));
+
+    expect(result).toEqual({ ok: false, error: "paypal_unconfirmed" });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await statusOf(draft.id)).toBe("draft");
+  });
+
   it("쿠키가 없으면 발송은 not_found이고 PayPal을 부르지 않는다", async () => {
     const draft = await draftOf(mine);
 

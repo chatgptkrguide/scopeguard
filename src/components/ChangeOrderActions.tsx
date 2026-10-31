@@ -23,14 +23,17 @@ const errorText: Record<ActionError | PayPalActionError, string> = {
   server_error: "This couldn't be saved just now. Nothing changed; try again.",
   in_progress: "This invoice is already being sent. Wait a moment, then reload.",
   paypal_unavailable: "PayPal didn't respond. Try again; the client won't get a second invoice.",
-  paypal_rejected: "PayPal refused this request, so nothing changed here.",
+  paypal_rejected: "PayPal refused this request, so nothing was sent.",
   already_paid: "The client already paid this invoice, so it can't be cancelled.",
   not_configured: "PayPal isn't set up on this server, so nothing was sent.",
   invoice_exists: "PayPal already has an invoice for this, so it can't be included at no charge. Send it again; you can cancel it afterwards.",
+  paypal_unconfirmed: "PayPal may have sent it, but this page couldn't confirm it. Press Send again to check; the client won't get a second invoice.",
 };
 
 const cancelErrorText: Partial<Record<ActionError | PayPalActionError, string>> = {
-  paypal_unavailable: "PayPal didn't respond, so the invoice is still open. Try again.",
+  paypal_unavailable: "PayPal didn't respond, so the invoice may still be open. Try again.",
+  paypal_rejected: "PayPal refused to cancel it, so the invoice is still open.",
+  paypal_unconfirmed: "PayPal cancelled the invoice, but this page couldn't save that. Cancel it again to bring the page up to date.",
   not_configured: "PayPal isn't set up on this server, so the invoice wasn't cancelled.",
 };
 
