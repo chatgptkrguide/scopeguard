@@ -16,6 +16,7 @@ const errorText: Record<ActionError, string> = {
 };
 
 // Puts the visitor's copy back to the starting demo. The server checks the id against the visitor cookie.
+// A quiet text button: a demo utility, not part of the contract under review.
 export function ResetDemo({ projectId }: ResetDemoProps) {
   const [state, resetAction, pending] = useActionState(resetDemo, null);
   const progress = pending ? "Resetting…" : state?.ok ? "Demo reset." : "";
@@ -30,7 +31,7 @@ export function ResetDemo({ projectId }: ResetDemoProps) {
         onClick={(event) => {
           if (pending) event.preventDefault(); // no second reset while the first is running
         }}
-        className="min-h-11 rounded-md border border-rule bg-sheet px-3 text-sm font-semibold text-ink-soft not-aria-disabled:hover:border-ink-soft not-aria-disabled:hover:text-ink not-aria-disabled:active:bg-paper aria-disabled:cursor-wait"
+        className="-mr-2 min-h-11 rounded-md px-2 text-sm text-ink-soft underline decoration-rule underline-offset-4 not-aria-disabled:hover:text-ink not-aria-disabled:hover:decoration-ink-soft not-aria-disabled:active:bg-paper aria-disabled:cursor-wait"
       >
         Reset demo
       </button>
