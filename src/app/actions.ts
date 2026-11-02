@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import { z } from "zod";
-import type { ActionResult, BillingActionResult } from "@/domain/action-result";
+import type { ActionResult, BillingActionResult, ResetActionResult } from "@/domain/action-result";
 import { cancelOwnedChangeOrder, liveBillingDeps, requoteOwnedChangeOrder, sendOwnedChangeOrder } from "@/server/billing";
 import { waiveOwnedChangeOrder } from "@/server/db/change-orders";
 import { checkOwnedPayment } from "@/server/payments";
@@ -37,22 +37,25 @@ export async function waiveChangeOrder(_prev: BillingActionResult | null, formDa
   return result;
 }
 
-export async function resetDemo(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+// Refused with invoice_open while a change order has an invoice the client may still pay: deleting that order would
+// leave a payment the webhook can't record. The page is refreshed then too, so it shows the order as it is now.
+export async function resetDemo(_prev: ResetActionResult | null, formData: FormData): Promise<ResetActionResult> {
   const projectId = demoProjectIdSchema.safeParse(formData.get("projectId"));
   if (!projectId.success) return { ok: false, error: "invalid_input" };
 
   // Someone else's copy and a copy that doesn't exist answer the same way.
   if (projectId.data !== (await currentProjectId())) return { ok: false, error: "not_found" };
 
+  let outcome: "reset" | "invoice_open";
   try {
-    await resetDemoCopy(getDb(), projectId.data, new Date());
+    outcome = await resetDemoCopy(getDb(), projectId.data, new Date());
   } catch (error) {
     // The reset is one batch, so a failure leaves the copy exactly as it was.
     console.error("resetting the demo copy failed", error);
     return { ok: false, error: "server_error" };
   }
   refresh();
-  return { ok: true };
+  return outcome === "reset" ? { ok: true } : { ok: false, error: "invoice_open" };
 }
 
 // Sends the change order as a PayPal invoice. The form carries only the id: amount, client and invoice come

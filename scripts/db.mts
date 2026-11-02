@@ -9,6 +9,11 @@ await runMigrations(db);
 console.log("migrations applied");
 
 if (process.argv.includes("--seed")) {
-  await resetDemoCopy(db, LOCAL_DEMO_PROJECT_ID, new Date());
-  console.log(`demo project "${LOCAL_DEMO_PROJECT_ID}" seeded`);
+  const outcome = await resetDemoCopy(db, LOCAL_DEMO_PROJECT_ID, new Date());
+  if (outcome === "invoice_open") {
+    console.error(`demo project "${LOCAL_DEMO_PROJECT_ID}" has a PayPal invoice that can still be paid; cancel it first`);
+    process.exitCode = 1;
+  } else {
+    console.log(`demo project "${LOCAL_DEMO_PROJECT_ID}" seeded`);
+  }
 }

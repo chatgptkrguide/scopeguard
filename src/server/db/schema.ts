@@ -117,7 +117,7 @@ export const changeOrders = sqliteTable(
     ),
     check("change_orders_amount_not_negative", sql`${t.amountCents} >= 0`),
     check("change_orders_hours_positive", sql`${t.hours} > 0 AND ${t.extraDays} >= 0`),
-    // Mirrors the domain rules in change-order.ts, so a stray write can't skip them.
+    // What each status must hold. The only copy of these rules: the moves between statuses are in domain/change-order.ts.
     check(
       "change_orders_sent_has_invoice",
       sql`${t.status} <> 'sent' OR (${t.paypalInvoiceId} IS NOT NULL AND ${t.sentAt} IS NOT NULL)`,

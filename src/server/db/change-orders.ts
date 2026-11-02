@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, lt, notExists, or, sql, type SQL } from "drizzle-orm";
 import type { BillingActionResult } from "../../domain/action-result";
 import { canTransition } from "../../domain/change-order";
 import type { PaymentOrder } from "../../domain/payment";
@@ -27,6 +27,24 @@ export async function ownedStatus(db: Db, ownerProjectId: string, changeOrderId:
 export const SEND_CLAIM_TTL_MS = 2 * 60 * 1000;
 
 const staleClaimBefore = (now: Date) => new Date(now.getTime() - SEND_CLAIM_TTL_MS).toISOString();
+
+// Orders whose PayPal invoice the client may still pay, or may get in a moment: sent ones, drafts that already hold an
+// invoice id (a send stopped part way, so the client may have it), and drafts a send is under way for. Deleting one
+// would leave a payable invoice with no row for the payment webhook to settle, so a demo reset refuses while its copy
+// has one and the seven-day cleanup skips that copy (server/db/demo.ts).
+export function hasOpenInvoice(now: Date): SQL {
+  return or(
+    eq(changeOrders.status, "sent"),
+    and(eq(changeOrders.status, "draft"), or(isNotNull(changeOrders.paypalInvoiceId), gte(changeOrders.sendClaimedAt, staleClaimBefore(now)))),
+  )!;
+}
+
+// True for a project row of the outer query (projects) that has no such order.
+export function noOpenInvoice(db: Db, now: Date): SQL {
+  return notExists(
+    db.select({ id: changeOrders.id }).from(changeOrders).where(and(eq(changeOrders.projectId, projects.id), hasOpenInvoice(now))),
+  );
+}
 
 interface WaiveCheck {
   status: ChangeOrderStatus;

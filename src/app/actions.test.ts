@@ -160,6 +160,26 @@ describe("서버 액션: 무료 처리와 데모 재설정", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it("발송된 견적이 있으면 재설정을 invoice_open으로 거부하고 견적을 지우지 않는다(화면은 새로 그린다)", async () => {
+    signIn(me);
+    const draft = await draftOf(mine);
+    await db
+      .update(changeOrders)
+      .set({ status: "sent", paypalInvoiceId: "INV2-AAAA-BBBB-CCCC-DDDD", sentAt: NOW.toISOString() })
+      .where(eq(changeOrders.id, draft.id));
+    vi.mocked(refresh).mockClear();
+
+    const result = await resetDemo(null, form({ projectId: mine }));
+
+    expect(result).toEqual({ ok: false, error: "invoice_open" });
+    expect(await ordersOf(mine)).toEqual([
+      ["Gift card page", "paid", 25000],
+      ["Loyalty page with customer login", "sent", 65000],
+    ]);
+    expect((await db.select().from(changeOrders).where(eq(changeOrders.id, draft.id)))[0]?.paypalInvoiceId).toBe("INV2-AAAA-BBBB-CCCC-DDDD");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("다른 사본의 id로 재설정하면 not_found이고 두 사본 모두 그대로다", async () => {
     signIn(me);
     await waiveChangeOrder(null, form({ changeOrderId: (await draftOf(theirs)).id }));

@@ -5,7 +5,8 @@ import { resetDemoCopy } from "./demo";
 import { runMigrations } from "./migrate";
 import { changeOrders } from "./schema";
 
-// The database repeats the domain rules, so a write that skips change-order.ts still can't break them.
+// What each status must hold is checked only by the CHECK constraints in schema.ts, tested here; the moves between
+// statuses are in domain/change-order.ts.
 describe("DB 제약", () => {
   let db: Db;
   let draftId: string;

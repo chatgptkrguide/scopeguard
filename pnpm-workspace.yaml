@@ -1,3 +1,8 @@
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
+# Dev-only advisories, raised where the newer version keeps the API the parent calls (see the commit that added them).
+# eslint 9 still pulls minimatch 3 for itself; that one needs eslint 10 and is left as is.
+overrides:
+  "@esbuild-kit/core-utils>esbuild": ^0.25.0
+  "@typescript-eslint/typescript-estree>minimatch": ^11.0.1
