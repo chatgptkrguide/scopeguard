@@ -96,6 +96,26 @@ describe("작업 화면 조회", () => {
     expect(data?.totals).toMatchObject({ changeOrdersCents: 25000, totalCents: 265000, hasUnpaid: false });
   });
 
+  it("한 인용에 취소 견적이 여럿이면 만든 순서로 나오고, 둘 다 보낸 적이 없으면 나중에 만든 것을 보여 준다", async () => {
+    // Voided drafts (never sent, so sentAt is null), quoted again in turn. The later one has the smaller id, so
+    // ordering by id would put it first and show the older one.
+    const [loyalty] = await db
+      .select({ id: changeOrders.id, findingId: changeOrders.findingId })
+      .from(changeOrders)
+      .where(and(eq(changeOrders.projectId, projectId), eq(changeOrders.status, "draft")));
+    await db.update(changeOrders).set({ status: "cancelled" }).where(eq(changeOrders.id, loyalty.id));
+    const quote = { projectId, findingId: loyalty.findingId, title: "Loyalty page with customer login", hours: 13, amountCents: 65000, extraDays: 3 };
+    const older = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const newer = "00000000-0000-4000-8000-000000000000";
+    await db.insert(changeOrders).values({ ...quote, id: older, status: "cancelled" });
+    await db.insert(changeOrders).values({ ...quote, id: newer, status: "cancelled" });
+
+    const data = await getWorkspace(db, projectId);
+
+    expect(data?.changeOrders.slice(1).map((o) => o.id)).toEqual([loyalty.id, older, newer]);
+    expect(data?.messages[3].findings[0].order?.id).toBe(newer);
+  });
+
   it("없는 프로젝트 id면 null을 돌려준다", async () => {
     expect(await getWorkspace(db, "v_doesNotExist0000000000")).toBeNull();
   });
@@ -134,7 +154,9 @@ describe("방문자 작업 화면 열기", () => {
   it("처음 온 방문자에게 사본을 만들고 한 번 읽어 화면을 돌려준다", async () => {
     const { read, calls } = racingRead(0);
 
-    const data = await openVisitorWorkspace(db, "visitor-a", NOW, read);
+    const { data, preview } = await openVisitorWorkspace(db, "visitor-a", NOW, { read });
+
+    expect(preview).toBe(false);
 
     expect(data.project.id).toBe(projectIdForVisitor("visitor-a"));
     expect(data.totals.totalCents).toBe(330000);
@@ -145,7 +167,7 @@ describe("방문자 작업 화면 열기", () => {
     await ensureDemoCopy(db, "visitor-a", NOW);
     const { read, calls } = racingRead(1);
 
-    const data = await openVisitorWorkspace(db, "visitor-a", later, read);
+    const { data } = await openVisitorWorkspace(db, "visitor-a", later, { read });
 
     expect(data.project.id).toBe(projectIdForVisitor("visitor-a"));
     expect(data.changeOrders.map((o) => o.status)).toEqual(["paid", "draft"]);
@@ -156,7 +178,7 @@ describe("방문자 작업 화면 열기", () => {
   it("다시 만든 사본도 읽기 전에 지워지면 두 번까지만 시도하고 오류를 낸다", async () => {
     const { read, calls } = racingRead(2);
 
-    await expect(openVisitorWorkspace(db, "visitor-a", later, read)).rejects.toThrow("demo copy missing after ensure");
+    await expect(openVisitorWorkspace(db, "visitor-a", later, { read })).rejects.toThrow("demo copy missing after ensure");
     expect(calls.count).toBe(2);
   });
 });
