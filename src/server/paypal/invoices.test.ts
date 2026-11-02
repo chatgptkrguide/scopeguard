@@ -33,7 +33,6 @@ import {
   findByInvoiceNumber,
   getInvoice,
   invoiceBody,
-  invoicesForReference,
   INVOICE_NUMBER_USED_UP,
   sendInvoice,
   type InvoiceInput,
@@ -430,15 +429,5 @@ describe("청구서 검색", () => {
 
     expect(found?.id).toBe(INVOICE_ID);
     expect(missing).toBeNull();
-  });
-
-  it("reference 검색은 부분 일치 결과에서 reference가 정확히 같은 것만 남긴다", async () => {
-    const prefixOnly = { ...createdDraft, id: "INV2-F23U-BL74-HE72-B87S", detail: { ...createdDraft.detail, reference: `${CHANGE_ORDER_ID}-x` } };
-    const pp = paypal({ [SEARCH]: { status: 200, body: searchResult(prefixOnly, createdDraft) } });
-
-    const found = await invoicesForReference(pp.client, CHANGE_ORDER_ID);
-
-    expect(found.map((i) => i.id)).toEqual([INVOICE_ID]);
-    expect(json(pp.to(SEARCH)[0].body)).toEqual({ reference: CHANGE_ORDER_ID });
   });
 });

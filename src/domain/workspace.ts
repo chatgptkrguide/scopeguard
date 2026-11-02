@@ -1,4 +1,4 @@
-import { isBillable } from "./change-order";
+import { isBillable, isUnpaid } from "./change-order";
 import { sumCents } from "./money";
 import type { ChangeOrder, Finding, Message, Project, ScopeItem } from "./types";
 
@@ -40,7 +40,7 @@ export function projectTotals(
     changeOrdersCents,
     totalCents: agreedCents + changeOrdersCents,
     paidCents: sumCents(orders.filter((o) => o.status === "paid").map((o) => o.amountCents)),
-    hasUnpaid: orders.some((o) => o.status === "draft" || o.status === "sent"),
+    hasUnpaid: orders.some(isUnpaid),
   };
 }
 

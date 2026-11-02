@@ -208,10 +208,3 @@ export async function findByInvoiceNumber(client: PayPalClient, invoiceNumber: s
   const found = await search(client, { invoice_number: invoiceNumber });
   return found.find((invoice) => invoice.invoiceNumber === invoiceNumber) ?? null;
 }
-
-// Every invoice whose reference is exactly this one. PayPal's reference search also matches prefixes,
-// so the results are filtered again. Used by the acceptance tests to count invoices per change order.
-export async function invoicesForReference(client: PayPalClient, reference: string): Promise<InvoiceView[]> {
-  const found = await search(client, { reference });
-  return found.filter((invoice) => invoice.reference === reference);
-}
