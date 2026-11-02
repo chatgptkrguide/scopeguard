@@ -4,6 +4,11 @@ export const ACTION_ERRORS = ["invalid_input", "not_found", "invalid_state", "se
 export type ActionError = (typeof ACTION_ERRORS)[number];
 export type ActionResult = { ok: true } | { ok: false; error: ActionError };
 
+// Reset's own extra answer. invoice_open: a change order has a PayPal invoice the client may still pay (sent, or a
+// send that stopped part way or is under way), so the copy was left as it is; cancel it first.
+export type ResetError = ActionError | "invoice_open";
+export type ResetActionResult = { ok: true } | { ok: false; error: ResetError };
+
 // Extra answers from the PayPal actions (send, cancel) and from waiving, which has to respect them. Kept apart so
 // the reset messages stay as they are.
 // in_progress: another request is sending this order · paypal_unavailable: PayPal didn't answer, trying again is safe

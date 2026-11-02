@@ -577,14 +577,17 @@ describe("견적 발송·취소·다시 견적", () => {
       expect(await sendOwnedChangeOrder(deps(paypal.gateway), last.projectId, last.draftId)).toEqual({ ok: true });
     });
 
-    it("발송·재설정을 반복해 활동 기록을 지워도 발송 기록 표로 상한이 유지된다 (P2-S1b)", async () => {
+    it("발송·취소·재설정을 반복해 활동 기록을 지워도 발송 기록 표로 상한이 유지된다 (P2-S1b)", async () => {
       const paypal = manyInvoices();
       const results = [];
 
       for (let i = 0; i < 11; i++) {
         const draft = await orderOf(mine, "draft");
         results.push(await sendOwnedChangeOrder(deps(paypal.gateway), mine, draft.id));
-        await resetDemoCopy(db, mine, clock.now()); // deletes this copy's activity rows and gives it a new draft id
+        // A sent invoice blocks the reset, so it is cancelled first.
+        if ((await row(draft.id))?.status === "sent") await cancelOwnedChangeOrder(deps(paypal.gateway), mine, draft.id);
+        // Deletes this copy's activity rows and gives it a new draft id.
+        expect(await resetDemoCopy(db, mine, clock.now())).toBe("reset");
       }
 
       expect(await db.select().from(activityEvents)).toEqual([]);

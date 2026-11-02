@@ -156,6 +156,7 @@ test.describe("P1 인수 시험", () => {
     await expect(page.getByText("Included at no charge").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Reset demo" }).click();
+    await page.getByRole("button", { name: "Confirm: reset demo" }).click();
 
     await expect(page.getByRole("button", { name: WAIVE, exact: true })).toHaveCount(1);
     expect(await totalText(page)).toBe("$3,300");
@@ -172,15 +173,34 @@ test.describe("P1 인수 시험", () => {
     await expect(page.getByText("Included at no charge").first()).toBeVisible();
 
     const reset = page.getByRole("button", { name: "Reset demo" });
+    const confirm = page.getByRole("button", { name: "Confirm: reset demo" });
     await reset.click();
+    await confirm.click();
     await expect(page.getByRole("button", { name: WAIVE, exact: true })).toHaveCount(1);
     await reset.click();
+    await confirm.click();
     await page.waitForTimeout(500);
     await page.reload();
 
     await expect(page.getByRole("button", { name: WAIVE, exact: true })).toHaveCount(1);
     expect(await totalText(page)).toBe("$3,300");
     expect(await projectId(page)).toBe(id);
+    await context.close();
+  });
+
+  test("P1 (c) 재설정은 확인을 거치고, 'Keep my changes'를 누르면 아무것도 바뀌지 않는다", async ({ browser }) => {
+    const { context, page } = await open(browser);
+    await waive(page);
+    await expect(page.getByText("Included at no charge").first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Reset demo" }).click();
+    await expect(page.getByText("This deletes every change you made to this demo")).toBeVisible();
+    await page.getByRole("button", { name: "Keep my changes" }).click();
+
+    await expect(page.getByRole("button", { name: "Reset demo" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Confirm: reset demo" })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByText("Included at no charge").first()).toBeVisible();
     await context.close();
   });
 
@@ -209,9 +229,10 @@ test.describe("P1 인수 시험", () => {
     await waive(a.page);
     await expect(a.page.getByText("Included at no charge").first()).toBeVisible();
     const aProject = await projectId(a.page);
+    await b.page.getByRole("button", { name: "Reset demo" }).click(); // forge after this click: React rewrites the value on re-render
     await b.page.locator("form[data-action='reset-demo'] input[name='projectId']").evaluate((el, id) => ((el as HTMLInputElement).value = id!), aProject);
 
-    await b.page.getByRole("button", { name: "Reset demo" }).click();
+    await b.page.getByRole("button", { name: "Confirm: reset demo" }).click();
 
     await expect(b.page.getByText(FORGED)).toBeVisible();
     await a.page.reload();
