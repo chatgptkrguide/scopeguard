@@ -76,4 +76,14 @@ describe("항목에 보여 줄 견적 고르기", () => {
     expect(displayedOrder([first, second])).toBe(second);
     expect(displayedOrder([])).toBeNull();
   });
+
+  it("보낸 시각이 같거나 둘 다 보낸 적이 없는 취소 견적이면 목록에서 나중 것(나중에 만든 것)을 보여 준다", () => {
+    const older = order("ffff", "cancelled", 65000);
+    const newer = order("0000", "cancelled", 65000);
+    const sentOlder = order("ffff-sent", "cancelled", 65000, "2026-11-02T10:00:00Z");
+    const sentNewer = order("0000-sent", "cancelled", 65000, "2026-11-02T10:00:00Z");
+
+    expect(displayedOrder([older, newer])).toBe(newer);
+    expect(displayedOrder([sentOlder, sentNewer])).toBe(sentNewer);
+  });
 });

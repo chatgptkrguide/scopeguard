@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, eq, inArray, lt, type SQL } from "drizzle-orm";
+import { and, count, eq, gt, inArray, lt, type SQL } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { locateFindings } from "../../domain/finding";
 import { extraDaysForHours, priceForHours } from "../../domain/money";
@@ -159,11 +159,23 @@ function deleteProjectStatements(db: Db, inProjects: (projectIdColumn: SQLiteCol
 export interface EnsureResult {
   projectId: string;
   created: boolean;
+  // No copy exists and mayCreate said no, so nothing was written. projectId is the id the copy would get.
+  refused: boolean;
 }
 
-// Returns the visitor's copy, creating it on first use. Two requests racing for the same visitor
-// end with one copy: the project id is the primary key, and the losing batch rolls back whole.
-export async function ensureDemoCopy(db: Db, visitorId: string, now: Date): Promise<EnsureResult> {
+// Asked only when the visitor has no copy yet, right before one would be written (see demo-limit.ts).
+export type MayCreateCopy = (db: Db, now: Date) => Promise<boolean>;
+
+const alwaysCreate: MayCreateCopy = async () => true;
+
+// Returns the visitor's copy, creating it on first use if mayCreate allows. Two requests racing for the same
+// visitor end with one copy: the project id is the primary key, and the losing batch rolls back whole.
+export async function ensureDemoCopy(
+  db: Db,
+  visitorId: string,
+  now: Date,
+  mayCreate: MayCreateCopy = alwaysCreate,
+): Promise<EnsureResult> {
   const projectId = projectIdForVisitor(visitorId);
   const [existing] = await db
     .select({ lastSeenAt: projects.lastSeenAt })
@@ -178,13 +190,15 @@ export async function ensureDemoCopy(db: Db, visitorId: string, now: Date): Prom
         .set({ lastSeenAt: now.toISOString() })
         .where(and(eq(projects.id, projectId), lt(projects.lastSeenAt, staleBefore)));
     }
-    return { projectId, created: false };
+    return { projectId, created: false, refused: false };
   }
+
+  if (!(await mayCreate(db, now))) return { projectId, created: false, refused: true };
 
   try {
     await db.batch(insertStatements(db, demoRows(projectId, now)));
   } catch (error) {
-    if (isUniqueViolation(error)) return { projectId, created: false };
+    if (isUniqueViolation(error)) return { projectId, created: false, refused: false };
     throw error;
   }
 
@@ -194,7 +208,17 @@ export async function ensureDemoCopy(db: Db, visitorId: string, now: Date): Prom
   } catch (error) {
     console.error("deleting expired demo copies failed", error);
   }
-  return { projectId, created: true };
+  return { projectId, created: true, refused: false };
+}
+
+// How many copies were created (or reset, which writes a new created_at) after `since`. One row per copy,
+// so resetting the same copy again never counts twice.
+export async function countCopiesCreatedSince(db: Db, since: Date): Promise<number> {
+  const [{ copies }] = await db
+    .select({ copies: count() })
+    .from(projects)
+    .where(gt(projects.createdAt, since.toISOString()));
+  return copies;
 }
 
 // Puts the copy back to the seed in one batch: same project id, fresh child ids, created and last seen now.

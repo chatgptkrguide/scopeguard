@@ -114,7 +114,7 @@ describe("데모 사본", () => {
 
     const second = await ensureDemoCopy(db, "visitor-a", later(1000));
 
-    expect(second).toEqual({ projectId: first.projectId, created: false });
+    expect(second).toEqual({ projectId: first.projectId, created: false, refused: false });
     expect(await rowCount(db, first.projectId)).toBe(12);
   });
 
@@ -280,7 +280,7 @@ describe("마지막 사용 시각과 7일 정리", () => {
 
     const again = await ensureDemoCopy(db, "visitor-a", later(DEMO_COPY_MAX_AGE_MS + 2));
 
-    expect(again).toEqual({ projectId: first.projectId, created: true });
+    expect(again).toEqual({ projectId: first.projectId, created: true, refused: false });
     expect(await rowCount(db, again.projectId)).toBe(12);
   });
 
